@@ -1,0 +1,18 @@
+# dsh-weixin-player 作为 profile bundle 时的挂载层：插入一行 Loader 条目。
+#
+# profile 把本包列进 `dsh.profile.bundles` 时（`dsh plugin --profile web add
+# link:E:/AI_dsh_plugin/dsh-weixin-player` 会自动加），这一层自动生效。
+#
+# 手工挂载（直接改 profile 的 cordis.patch.yml）时把下面三行抄过去即可：
+#
+#   - insert:
+#       - id: dsh-weixin
+#         name: dsh-weixin-player
+#         config:
+#           workspace: 'E:/你的工作目录'
+#
+# 微信渠道默认不启动：先扫码登录（DSH 里请求 /dsh-weixin 页面），
+# 登录成功后监控循环才会跑起来。
+- insert:
+    - id: dsh-weixin
+      name: dsh-weixin-player
