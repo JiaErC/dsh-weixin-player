@@ -1,4 +1,4 @@
-﻿import type { WeixinInboundMediaOpts } from "../messaging/inbound.js";
+import type { WeixinInboundMediaOpts } from "../messaging/inbound.js";
 import { logger } from "../util/logger.js";
 import { getMimeFromFilename } from "./mime.js";
 import { downloadAndDecryptBuffer, downloadPlainCdnBuffer } from "../cdn/pic-decrypt.js";

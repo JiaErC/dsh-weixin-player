@@ -115,32 +115,46 @@ function makeHost() {
   const registeredRoutes = [];
   const serviceCalls = [];
   const liveAgents = new Map();
+  /** session id → the tool names registered on that agent's own scope. */
+  const scopedTools = new Map();
 
   const emitSessionEvent = (sessionId, event) => {
     for (const listener of sessionListeners) listener({ id: sessionId }, event);
   };
 
-  const makeAgent = (sessionId) => ({
-    id: sessionId,
-    session: { id: sessionId, seq: 0, header: { cwd: "/tmp/workspace" } },
-    status: "idle",
-    followup(message) {
-      serviceCalls.push({ type: "followup", sessionId, message });
-      // Finish the turn on the next tick, like a real loop would.
-      setImmediate(() => {
-        emitSessionEvent(sessionId, {
-          type: "assistant/message",
-          data: { message: { content: [{ type: "text", text: "**目录** 里有两个文件。\n\nMEDIA:/tmp/workspace/report.txt" }] } },
+  const makeAgent = (sessionId) => {
+    // Each agent owns a scoped tool registry, the way `agent.ctx.tools` does.
+    const scoped = new Map();
+    scopedTools.set(sessionId, scoped);
+    return {
+      id: sessionId,
+      session: { id: sessionId, seq: 0, header: { cwd: "/tmp/workspace" } },
+      status: "idle",
+      followup(message) {
+        serviceCalls.push({ type: "followup", sessionId, message });
+        // Finish the turn on the next tick, like a real loop would.
+        setImmediate(() => {
+          emitSessionEvent(sessionId, {
+            type: "assistant/message",
+            data: { message: { content: [{ type: "text", text: "**目录** 里有两个文件。\n\nMEDIA:/tmp/workspace/report.txt" }] } },
+          });
+          emitSessionEvent(sessionId, { type: "turn/end", data: { reason: { kind: "completed" } } });
         });
-        emitSessionEvent(sessionId, { type: "turn/end", data: { reason: { kind: "completed" } } });
-      });
-    },
-    async whenIdle() {},
-    cancel() {
-      serviceCalls.push({ type: "cancel", sessionId });
-    },
-    ctx: {},
-  });
+      },
+      async whenIdle() {},
+      cancel() {
+        serviceCalls.push({ type: "cancel", sessionId });
+      },
+      ctx: {
+        tools: {
+          register(definition) {
+            scoped.set(definition.name, definition);
+            return () => scoped.delete(definition.name);
+          },
+        },
+      },
+    };
+  };
 
   const services = {
     agents: {
@@ -207,7 +221,7 @@ function makeHost() {
   };
   services.ctx = ctx;
 
-  return { ctx, services, registeredTools, registeredRoutes, serviceCalls };
+  return { ctx, services, registeredTools, registeredRoutes, serviceCalls, scopedTools };
 }
 
 test("the plugin mounts routes and tools, then answers a WeChat message end to end", async (t) => {
@@ -230,8 +244,8 @@ test("the plugin mounts routes and tools, then answers a WeChat message end to e
 
   // Mounting is asynchronous: wait for the routes the page needs.
   assert.ok(
-    await waitFor(() => host.registeredRoutes.length === 6),
-    `expected 6 routes, got ${host.registeredRoutes.map((route) => route.path).join(", ")}`,
+    await waitFor(() => host.registeredRoutes.length === 7),
+    `expected 7 routes, got ${host.registeredRoutes.map((route) => route.path).join(", ")}`,
   );
 
   assert.deepEqual(
@@ -243,13 +257,13 @@ test("the plugin mounts routes and tools, then answers a WeChat message end to e
       "/dsh-weixin/login/status",
       "/dsh-weixin/login/verify",
       "/dsh-weixin/status",
+      "/dsh-weixin/tools",
     ],
   );
 
-  assert.deepEqual(
-    host.registeredTools.map((tool) => tool.name).sort(),
-    ["weixin_login", "weixin_send", "weixin_status"],
-  );
+  // Tools must NOT be registered globally: that would expose them to every
+  // agent in the deployment, which is exactly what the tab's switch avoids.
+  assert.deepEqual(host.registeredTools, []);
 
   // The long poll must deliver the message, start a turn and send a reply.
   assert.ok(
@@ -265,6 +279,15 @@ test("the plugin mounts routes and tools, then answers a WeChat message end to e
   const followup = host.serviceCalls.find((call) => call.type === "followup");
   assert.ok(followup, "expected one driven turn");
   assert.equal(followup.message.content[0].text, "帮我总结一下这个目录");
+
+  // A WeChat conversation gets the channel's tools on its own scope, because
+  // those sessions exist to talk on WeChat.
+  const channelSessionTools = host.scopedTools.get(outcome.options.sessionId);
+  assert.ok(channelSessionTools !== undefined, "expected a scoped registry for the channel session");
+  assert.deepEqual(
+    [...channelSessionTools.keys()].sort(),
+    ["weixin_login", "weixin_send", "weixin_status"],
+  );
 
   const message = sentMessages[0].msg;
   assert.equal(message.to_user_id, PEER);
@@ -307,5 +330,104 @@ test("a session that is not bound to WeChat cannot send", async () => {
     /no WeChat account is running/,
   );
 
+  await runtime.stop();
+});
+
+test("the tools route turns the switch on and off for one live session only", async () => {
+  const host = makeHost();
+  const config = (await import("../lib/config.js")).normalizeConfig({}, "/tmp/workspace");
+  const runtimeModule = await import("../lib/channel/runtime.js");
+  const runtime = new runtimeModule.WeixinChannelRuntime({ services: host.services, config });
+
+  const { buildWeixinTools } = await import("../lib/tools/index.js");
+  const optInModule = await import("../lib/tools/optin.js");
+  const optIn = new optInModule.WeixinToolOptIn({
+    ctx: host.ctx,
+    services: host.services,
+    definitions: buildWeixinTools(runtime),
+  });
+  optIn.start();
+  runtime.useToolOptIn(optIn);
+
+  // Two ordinary sessions, unrelated to WeChat.
+  const agentA = await host.services.agents.create({ sessionId: "session-a" });
+  const agentB = await host.services.agents.create({ sessionId: "session-b" });
+
+  const { buildWeixinRoutes } = await import("../lib/host/routes.js");
+  const routes = buildWeixinRoutes({
+    runtime,
+    config,
+    trustedHosts: () => [],
+  });
+  const toolsRoute = routes.find((route) => route.path === "/dsh-weixin/tools");
+  assert.ok(toolsRoute !== undefined);
+
+  /** Run one request against the route through a fake req/res pair. */
+  async function call(method, url, body) {
+    const req = Object.assign(new (await import("node:stream")).PassThrough(), {
+      method,
+      url,
+      headers: { host: "127.0.0.1:3080" },
+    });
+    const chunks = [];
+    const res = {
+      statusCode: 0,
+      headers: {},
+      writeHead(code, headers) {
+        this.statusCode = code;
+        this.headers = headers ?? {};
+        return this;
+      },
+      end(payload) {
+        if (payload !== undefined) chunks.push(Buffer.from(payload));
+      },
+    };
+    const finished = new Promise((resolve) => {
+      res.end = (payload) => {
+        if (payload !== undefined) chunks.push(Buffer.from(payload));
+        resolve();
+        return res;
+      };
+    });
+    const handling = toolsRoute.handler(req, res);
+    if (body !== undefined) req.end(JSON.stringify(body));
+    else req.end();
+    await Promise.all([handling, finished]);
+    const text = Buffer.concat(chunks).toString("utf8");
+    return { status: res.statusCode, body: text === "" ? undefined : JSON.parse(text) };
+  }
+
+  // Enabled for A only.
+  const enabled = await call("POST", "/dsh-weixin/tools", { sessionId: "session-a", enabled: true });
+  assert.equal(enabled.status, 200);
+  assert.equal(enabled.body.enabled, true);
+  assert.equal(enabled.body.applied, true);
+
+  assert.deepEqual([...host.scopedTools.get("session-a").keys()].sort(), [
+    "weixin_login",
+    "weixin_send",
+    "weixin_status",
+  ]);
+  assert.equal(host.scopedTools.get("session-b").size, 0);
+
+  // The read agrees, and the tools are still global-free.
+  const read = await call("GET", "/dsh-weixin/tools?sessionId=session-a");
+  assert.equal(read.status, 200);
+  assert.equal(read.body.enabled, true);
+  assert.deepEqual([...read.body.tools].sort(), ["weixin_login", "weixin_send", "weixin_status"]);
+  assert.deepEqual(host.registeredTools, []);
+
+  // Disabling removes them again.
+  const disabled = await call("POST", "/dsh-weixin/tools", { sessionId: "session-a", enabled: false });
+  assert.equal(disabled.body.enabled, false);
+  assert.equal(host.scopedTools.get("session-a").size, 0);
+
+  // A missing session id is a 400, not a crash.
+  const bad = await call("GET", "/dsh-weixin/tools");
+  assert.equal(bad.status, 400);
+
+  optIn.close();
+  await agentA.dispose();
+  await agentB.dispose();
   await runtime.stop();
 });

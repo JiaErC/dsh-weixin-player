@@ -155,6 +155,13 @@ export interface AgentSessionDeps {
   services: HostServices;
   config: WeixinChannelConfig;
   tracker: { begin(sessionId: string): Promise<TurnOutcome>; abort(sessionId: string): void };
+  /**
+   * Called once per newly created or resumed agent, before its first turn.
+   *
+   * The channel uses it to give its own conversations the WeChat tools without
+   * touching any agent preset.
+   */
+  onAgentReady?: (sessionId: string, agent: AgentLike) => void;
 }
 
 /**
@@ -247,7 +254,10 @@ export class AgentSessionManager {
   /** Get the live agent for a binding, creating or resuming as needed. */
   private async ensureAgent(binding: PeerBinding): Promise<AgentLike> {
     const live = this.agents.get(binding.sessionId);
-    if (live !== undefined) return live;
+    if (live !== undefined) {
+      this.notifyReady(binding.sessionId, live);
+      return live;
+    }
 
     const composition = await this.composition();
     const agentOptions = this.agentOptions();
@@ -261,6 +271,7 @@ export class AgentSessionManager {
       });
       this.handles.set(binding.sessionId, handle);
       logger.info(`agent-session: resumed ${binding.sessionId}`);
+      this.notifyReady(binding.sessionId, handle.agent);
       return handle.agent;
     }
 
@@ -279,7 +290,17 @@ export class AgentSessionManager {
     logger.info(
       `agent-session: created ${binding.sessionId} (preset=${composition.agentPreset ?? "none"}, cwd=${cwd})`,
     );
+    this.notifyReady(binding.sessionId, handle.agent);
     return handle.agent;
+  }
+
+  /** Announce a ready agent to the channel (tool opt-in, bookkeeping). */
+  private notifyReady(sessionId: string, agent: AgentLike): void {
+    try {
+      this.deps.onAgentReady?.(sessionId, agent);
+    } catch (err) {
+      logger.warn(`agent-session: onAgentReady failed for ${sessionId}: ${String(err)}`);
+    }
   }
 
   /** Run one turn for a binding, serialized behind earlier turns. */

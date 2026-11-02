@@ -179,13 +179,13 @@ export function isMediaItem(item: MessageItem): boolean {
 export function getMediaLabel(type: number | undefined): string {
   switch (type) {
     case MessageItemType.IMAGE:
-      return "[鍥剧墖]";
+      return "[图片]";
     case MessageItemType.VIDEO:
-      return "[瑙嗛]";
+      return "[视频]";
     case MessageItemType.FILE:
-      return "[鏂囦欢]";
+      return "[文件]";
     case MessageItemType.VOICE:
-      return "[璇煶]";
+      return "[语音]";
     default:
       return "";
   }
@@ -207,7 +207,7 @@ function bodyFromItemList(itemList?: MessageItem[]): string {
     if (item.type === MessageItemType.TEXT && item.text_item?.text != null) {
       return String(item.text_item.text);
     }
-    // 璇煶杞枃瀛楋細濡傛灉璇煶娑堟伅鏈?text 瀛楁锛岀洿鎺ヤ娇鐢ㄦ枃瀛楀唴瀹?
+    // 语音转文字：如果语音消息有 text 字段，直接使用文字内容
     if (item.type === MessageItemType.VOICE && item.voice_item?.text) {
       return item.voice_item.text;
     }
@@ -234,9 +234,9 @@ export type WeixinInboundMediaOpts = {
 };
 
 /**
- * Convert a WeixinMessage from getUpdates into the inbound context.
- * Media: only pass MediaPath (local file, after CDN download + decrypt) 鈥?the
- * upstream CDN URL is encrypted and auth-only, so it is never forwarded.
+ * Convert a WeixinMessage from getUpdates to the inbound MsgContext for the core pipeline.
+ * Media: only pass MediaPath (local file, after CDN download + decrypt).
+ * We never pass MediaUrl — the upstream CDN URL is encrypted/auth-only.
  * Priority when multiple media types present: image > video > file > voice.
  */
 export function weixinMessageToMsgContext(
@@ -317,13 +317,13 @@ function applyInlineQuoteContext(ctx: WeixinMsgContext, msg: WeixinMessage): voi
 
 function expiredMediaLabel(mime?: string, name?: string): string {
   const kind = mime?.startsWith("image/")
-    ? "鍥剧墖"
+    ? "图片"
     : mime?.startsWith("video/")
-      ? "瑙嗛"
+      ? "视频"
       : mime?.startsWith("audio/")
-        ? "璇煶"
-        : "闄勪欢";
-  return name ? `[寮曠敤鐨?{kind}宸茶繃鏈? ${name}]` : `[寮曠敤鐨?{kind}宸茶繃鏈焆`;
+        ? "语音"
+        : "附件";
+  return name ? `[引用的${kind}已过期: ${name}]` : `[引用的${kind}已过期]`;
 }
 
 /** Resolve an ID-only quote from the local cache. */
@@ -343,7 +343,7 @@ export function resolveStoredQuoteContext(
   if (ctx.ReplyToBody && (ref.title?.trim() || ref.message_item)) return;
   const record = store?.find(accountId, ctx.From, referenceId);
   if (!record) {
-    if (!ctx.ReplyToBody) ctx.ReplyToBody = "[寮曠敤娑堟伅鍐呭鏈紦瀛榏";
+    if (!ctx.ReplyToBody) ctx.ReplyToBody = "[引用消息内容未缓存]";
     return;
   }
 

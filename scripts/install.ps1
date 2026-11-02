@@ -34,4 +34,6 @@ if ($LASTEXITCODE -ne 0) { throw "dsh plugin add 失败（退出码 $LASTEXITCOD
 Write-Host ''
 Write-Host '完成。接下来：'
 Write-Host '  1. 重启正在运行的 dsh（例如重新执行 dsh web）'
-Write-Host '  2. 浏览器打开 http://127.0.0.1:3080/dsh-weixin 扫码登录'
+Write-Host '  2. 刷新浏览器页面 —— 右侧栏「新建 tab」里会出现「微信」'
+Write-Host '  3. 在 tab 里扫码登录；同一个 tab 顶部可给当前会话启用 weixin_* 工具'
+Write-Host '  （完整状态页：http://127.0.0.1:3080/dsh-weixin ）'

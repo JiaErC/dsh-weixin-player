@@ -13,6 +13,7 @@ import {
 import { clearContextTokensForAccount } from "../messaging/inbound.js";
 import { logger } from "../util/logger.js";
 import { redactToken } from "../util/redact.js";
+import type { QrLoginSnapshot, QrLoginStatus } from "../../shared/wire.js";
 
 /**
  * Non-blocking Weixin QR login.
@@ -42,36 +43,11 @@ const MAX_QR_REFRESH_COUNT = 3;
 /** Pause between two status polls after a non-eventful response. */
 const POLL_INTERVAL_MS = 1_000;
 
-/** Lifecycle of one login attempt. */
-export type QrLoginStatus =
-  | "starting"
-  | "wait"
-  | "scaned"
-  | "need_verifycode"
-  | "refreshing"
-  | "confirmed"
-  | "already_connected"
-  | "failed";
-
-/** What a client (web page, tool) can read about a login attempt. */
-export interface QrLoginSnapshot {
-  sessionKey: string;
-  status: QrLoginStatus;
-  /** One line the UI can show verbatim. */
-  message: string;
-  /** Content that must be rendered as a QR code; absent once confirmed. */
-  qrcodeUrl?: string;
-  /** Epoch ms when the current QR code was issued. */
-  startedAt: number;
-  /** Whether a numeric verification code is currently expected. */
-  needsVerifyCode: boolean;
-  /** Account bound by this attempt, once confirmed. */
-  accountId?: string;
-  /** Weixin user id that scanned, once confirmed. */
-  userId?: string;
-  /** Terminal failure reason, when `status` is `failed`. */
-  error?: string;
-}
+/**
+ * `QrLoginStatus` and `QrLoginSnapshot` are defined in `shared/wire.ts` because
+ * the browser tab reads them; they are re-exported here for the host's callers.
+ */
+export type { QrLoginSnapshot, QrLoginStatus };
 
 interface QrCodeResponse {
   qrcode: string;

@@ -1,4 +1,4 @@
-﻿import { sendMessage as sendMessageApi } from "../api/api.js";
+import { sendMessage as sendMessageApi } from "../api/api.js";
 import type { WeixinApiOptions } from "../api/api.js";
 import { logger } from "../util/logger.js";
 import { generateId } from "../util/random.js";

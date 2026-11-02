@@ -1,0 +1,184 @@
+/**
+ * Inline styles for the WeChat tab.
+ *
+ * Inline (not a stylesheet) on purpose: this bundle ships no CSS, so there is
+ * nothing to inject on load or clean up on unload. Every colour comes from a DSH
+ * theme alias token, so the tab follows the active skin and light/dark switching.
+ * Each token carries a fallback from the same family this build defines: an unset
+ * custom property would silently invalidate the whole declaration.
+ */
+import type { CSSProperties } from "react";
+
+/** Theme aliases this view consumes. */
+export const token = {
+  surface: "var(--dsw-alias-bg-layer-1)",
+  raised: "var(--dsw-alias-bg-layer-2)",
+  border: "var(--dsw-alias-border-l2)",
+  hairline: "var(--dsw-alias-border-l1, var(--dsw-alias-border-l2))",
+  text: "var(--dsw-alias-label-primary)",
+  textSecondary: "var(--dsw-alias-label-secondary)",
+  textTertiary: "var(--dsw-alias-label-tertiary)",
+  accent: "var(--dsw-alias-state-business-primary)",
+  accentFill: "var(--dsw-alias-button-primary-fill)",
+  accentFillHover: "var(--dsw-alias-button-primary-hover)",
+  success: "var(--dsw-alias-state-success-primary)",
+  danger: "var(--dsw-alias-state-error-primary)",
+  hover: "var(--dsw-alias-interactive-bg-hover)",
+  mono: "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace",
+} as const;
+
+/** Root panel: the sidebar page itself. */
+export const panel: CSSProperties = {
+  display: "flex",
+  flexDirection: "column",
+  height: "100%",
+  minHeight: 0,
+  overflowY: "auto",
+  background: token.surface,
+  color: token.text,
+  fontSize: 12,
+  lineHeight: 1.55,
+};
+
+/** One bordered block. */
+export const card: CSSProperties = {
+  margin: "10px 12px 0",
+  padding: 10,
+  border: `1px solid ${token.hairline}`,
+  borderRadius: 8,
+  background: token.raised,
+};
+
+/** The last card keeps the bottom breathing room. */
+export const cardLast: CSSProperties = { ...card, marginBottom: 14 };
+
+/** Card heading row. */
+export const cardHeader: CSSProperties = {
+  display: "flex",
+  alignItems: "center",
+  justifyContent: "space-between",
+  gap: 8,
+  marginBottom: 8,
+};
+
+/** Heading text. */
+export const title: CSSProperties = {
+  fontSize: 12,
+  fontWeight: 600,
+  color: token.text,
+};
+
+/** Secondary explanatory line. */
+export const hint: CSSProperties = {
+  margin: "6px 0 0",
+  fontSize: 11,
+  color: token.textSecondary,
+};
+
+/** Faint metadata line. */
+export const meta: CSSProperties = {
+  fontSize: 11,
+  color: token.textTertiary,
+  fontFamily: token.mono,
+  wordBreak: "break-all",
+};
+
+/** Primary button. */
+export const primaryButton: CSSProperties = {
+  font: "inherit",
+  fontSize: 12,
+  padding: "5px 12px",
+  borderRadius: 6,
+  border: `1px solid ${token.accentFill}`,
+  background: token.accentFill,
+  color: "#fff",
+  cursor: "pointer",
+};
+
+/** Secondary button. */
+export const secondaryButton: CSSProperties = {
+  font: "inherit",
+  fontSize: 12,
+  padding: "5px 12px",
+  borderRadius: 6,
+  border: `1px solid ${token.border}`,
+  background: "transparent",
+  color: token.text,
+  cursor: "pointer",
+};
+
+/** Disabled state shared by both buttons. */
+export const disabled: CSSProperties = { opacity: 0.55, cursor: "default" };
+
+/** Text input. */
+export const input: CSSProperties = {
+  font: "inherit",
+  fontSize: 12,
+  width: 96,
+  padding: "5px 8px",
+  borderRadius: 6,
+  border: `1px solid ${token.border}`,
+  background: token.surface,
+  color: token.text,
+};
+
+/** Status pill. */
+export function pill(color: string): CSSProperties {
+  return {
+    display: "inline-block",
+    padding: "0 8px",
+    borderRadius: 999,
+    border: `1px solid ${color}`,
+    color,
+    fontSize: 11,
+    lineHeight: "18px",
+  };
+}
+
+/** The QR image frame. */
+export const qrFrame: CSSProperties = {
+  width: 196,
+  height: 196,
+  borderRadius: 8,
+  border: `1px solid ${token.hairline}`,
+  background: "#fff",
+  objectFit: "contain",
+  display: "block",
+  margin: "0 auto",
+};
+
+/** Placeholder shown before a QR code exists. */
+export const qrPlaceholder: CSSProperties = {
+  ...qrFrame,
+  background: token.surface,
+  color: token.textTertiary,
+  display: "flex",
+  alignItems: "center",
+  justifyContent: "center",
+  textAlign: "center",
+  fontSize: 11,
+  padding: 12,
+};
+
+/** Row of controls. */
+export const row: CSSProperties = {
+  display: "flex",
+  alignItems: "center",
+  gap: 8,
+  marginTop: 8,
+  flexWrap: "wrap",
+};
+
+/** Error line. */
+export const errorText: CSSProperties = {
+  margin: "6px 0 0",
+  fontSize: 11,
+  color: token.danger,
+};
+
+/** A link that looks like one. */
+export const link: CSSProperties = {
+  color: token.accent,
+  textDecoration: "none",
+  fontSize: 11,
+};

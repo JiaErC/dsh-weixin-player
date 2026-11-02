@@ -53,6 +53,14 @@ function makeRuntime(overrides = {}) {
         logFile: "/tmp/log.jsonl",
       };
     },
+    // The channel runtime always has these; `toolExposure` answering undefined
+    // is what a deployment without a tool registry looks like.
+    toolExposure() {
+      return undefined;
+    },
+    setToolsEnabled() {
+      throw new Error("dsh-weixin: this profile has no tool registry, so tools cannot be enabled");
+    },
   };
 }
 
@@ -207,5 +215,46 @@ test("the QR image route answers 404 without an active code", async () => {
   await withServer(routes, async (base) => {
     const response = await fetch(`${base}/dsh-weixin/login/qr.png`);
     assert.equal(response.status, 404);
+  });
+});
+
+test("the tools route degrades when the channel has no tool registry", async () => {
+  // `makeRuntime` exposes neither `toolExposure` nor `setToolsEnabled`, which is
+  // exactly the shape of a deployment without a tool registry.
+  const runtime = makeRuntime();
+  const routes = buildWeixinRoutes({ runtime, config: CONFIG, trustedHosts: () => [] });
+
+  await withServer(routes, async (base) => {
+    const response = await fetch(`${base}/dsh-weixin/tools?sessionId=session-a`);
+    assert.equal(response.status, 200);
+    const body = await response.json();
+    assert.equal(body.ok, true);
+    assert.equal(body.enabled, false);
+    assert.deepEqual(body.tools, []);
+    assert.match(body.note, /工具注册表/);
+  });
+});
+
+test("the tools route rejects a request without a session id", async () => {
+  const runtime = makeRuntime();
+  const routes = buildWeixinRoutes({ runtime, config: CONFIG, trustedHosts: () => [] });
+
+  await withServer(routes, async (base) => {
+    const response = await fetch(`${base}/dsh-weixin/tools`);
+    assert.equal(response.status, 400);
+  });
+});
+
+test("the tools route only answers same-origin requests", async () => {
+  const runtime = makeRuntime();
+  const routes = buildWeixinRoutes({ runtime, config: CONFIG, trustedHosts: () => [] });
+
+  await withServer(routes, async (base) => {
+    const response = await fetch(`${base}/dsh-weixin/tools`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Origin: "https://evil.example" },
+      body: JSON.stringify({ sessionId: "session-a", enabled: true }),
+    });
+    assert.equal(response.status, 403);
   });
 });

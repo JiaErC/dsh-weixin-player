@@ -1,4 +1,4 @@
-﻿import crypto from "node:crypto";
+import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -30,7 +30,7 @@ export type WeixinApiOptions = {
 };
 
 // ---------------------------------------------------------------------------
-// BaseInfo 鈥?attached to every outgoing CGI request
+// BaseInfo — attached to every outgoing CGI request
 // ---------------------------------------------------------------------------
 
 interface PackageJson {
@@ -69,7 +69,7 @@ export function readPackageJsonFromDir(startDir: string): PackageJson {
             return parsed;
           }
         } catch {
-          // Malformed package.json 鈥?keep walking up.
+          // Malformed package.json — keep walking up.
         }
       }
       dir = path.dirname(dir);
@@ -89,7 +89,7 @@ const pkg = readPackageJson();
 /** Fallback channel version reported to the iLink server when the manifest is unreadable. */
 const CHANNEL_VERSION = pkg.version ?? "unknown";
 
-/** iLink-App-Id: 鐩存帴璇诲彇 package.json 椤跺眰 ilink_appid 瀛楁銆?*/
+/** iLink-App-Id: 直接读取 package.json 顶层 ilink_appid 字段。 */
 const ILINK_APP_ID: string = pkg.ilink_appid ?? "";
 
 /**
@@ -108,7 +108,7 @@ function buildClientVersion(version: string): number {
 const ILINK_APP_CLIENT_VERSION: number = buildClientVersion(pkg.version ?? "0.0.0");
 
 /**
- * Default `bot_agent` value used when the deployment does not declare one.
+ * Default `bot_agent` value used when the upstream app does not declare one.
  * Mirrors the role of HTTP `User-Agent`'s implicit "no UA" fallback.
  */
 const DEFAULT_BOT_AGENT = "DSH/0.1";
@@ -257,7 +257,7 @@ function buildHeaders(opts: { token?: string }): Record<string, string> {
 
 /**
  * Classify a fetch-level error into a category for logging / diagnostics.
- * This does NOT cover HTTP-level errors (4xx/5xx) 鈥?those are thrown separately.
+ * This does NOT cover HTTP-level errors (4xx/5xx) — those are thrown separately.
  */
 export function classifyFetchError(err: unknown): {
   type: "dns" | "tcp" | "tls" | "timeout" | "unknown";

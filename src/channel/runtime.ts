@@ -12,48 +12,23 @@ import { WeixinQrLoginManager } from "../protocol/auth/login-qr.js";
 import { initializeQuoteStore } from "../protocol/messaging/quote-store.js";
 import { resetRuntimeSettings, setRuntimeSettings } from "../protocol/runtime-settings.js";
 import { logger } from "../protocol/util/logger.js";
+import type { AccountSnapshot, ChannelSnapshot, PeerSnapshot } from "../shared/wire.js";
+import type { WeixinToolOptIn, ToolExposure } from "../tools/optin.js";
 import { handleInboundMessage } from "./handle-message.js";
 import { createConfigManager, createMonitorStatus, monitorWeixinAccount } from "./monitor.js";
 import type { MonitorStatus } from "./monitor.js";
 import { AccountSender } from "./outbound.js";
 import { AgentSessionManager, PeerSessionStore } from "./peer-session.js";
-import type { PeerBinding } from "./peer-session.js";
 import { TurnTracker } from "./turn-tracker.js";
 
 /**
  * The channel itself: one long-poll monitor per logged-in WeChat account, all
  * of them feeding the same agent-session machinery.
  *
- * Mounting the plugin does not start anything by itself — {@link start} waits
+ * Mounting the plugin does not start anything by itself 鈥?{@link start} waits
  * for the harness Loader to settle, then reconciles the accounts found on disk.
  * A later QR login re-runs the same reconcile through `onAccountsChanged`.
  */
-
-/** One account as the status route reports it. */
-export interface AccountSnapshot {
-  accountId: string;
-  name: string | undefined;
-  enabled: boolean;
-  configured: boolean;
-  running: boolean;
-  startedAt: number | undefined;
-  lastInboundAt: number | undefined;
-  lastEventAt: number | undefined;
-  lastError: string | undefined;
-  inboundCount: number;
-  ownerUserId: string | undefined;
-}
-
-/** Everything the status route and `weixin_status` tool report. */
-export interface ChannelSnapshot {
-  workspace: string;
-  agentPreset: string | undefined;
-  sessionMode: string;
-  allowFrom: readonly string[];
-  accounts: AccountSnapshot[];
-  peers: PeerBinding[];
-  logFile: string;
-}
 
 /** What one running account owns. */
 interface AccountRuntime {
@@ -77,6 +52,8 @@ export class WeixinChannelRuntime {
   readonly store = new PeerSessionStore();
 
   private readonly running = new Map<string, AccountRuntime>();
+  /** Per-session tool exposure; set once the definitions exist. */
+  private toolOptIn: WeixinToolOptIn | undefined;
   private readonly tracker: TurnTracker;
   private readonly stopWatchingAccounts: () => void;
   private started = false;
@@ -89,8 +66,20 @@ export class WeixinChannelRuntime {
       services: deps.services,
       config: deps.config,
       tracker: this.tracker,
+      onAgentReady: (sessionId) => this.enableToolsForChannelSession(sessionId),
     });
     this.stopWatchingAccounts = onAccountsChanged(() => this.scheduleReconcile());
+  }
+
+  /**
+   * Attach the per-session tool exposure manager.
+   *
+   * Separated from the constructor because the tool definitions close over this
+   * runtime: the runtime must exist before the definitions, and the definitions
+   * before the manager.
+   */
+  useToolOptIn(optIn: WeixinToolOptIn | undefined): void {
+    this.toolOptIn = optIn;
   }
 
   private get config(): WeixinChannelConfig {
@@ -127,7 +116,7 @@ export class WeixinChannelRuntime {
 
     if (accounts.length === 0) {
       logger.info(
-        "runtime: no WeChat account is logged in yet — open the login page in DSH to scan the QR code",
+        "runtime: no WeChat account is logged in yet 鈥?open the login tab in DSH to scan the QR code",
       );
     }
 
@@ -163,7 +152,7 @@ export class WeixinChannelRuntime {
     }
     if (!account.configured) {
       logger.warn(
-        `runtime: account ${normalized} has no token — log in again from the DSH login page`,
+        `runtime: account ${normalized} has no token 鈥?log in again from the DSH WeChat tab`,
       );
       return;
     }
@@ -250,6 +239,47 @@ export class WeixinChannelRuntime {
     return ownerUserId === undefined || ownerUserId === "" ? [] : [ownerUserId];
   }
 
+  /**
+   * Give a WeChat conversation its own tools.
+   *
+   * These sessions exist to talk on WeChat, so `weixin_send`/`weixin_login`/
+   * `weixin_status` belong to them by default. The registration is scoped to
+   * the agent, so it never leaks into the preset or into other sessions.
+   */
+  private enableToolsForChannelSession(sessionId: string): void {
+    if (!this.config.autoEnableTools) return;
+    const optIn = this.toolOptIn;
+    if (optIn === undefined) return;
+    if (optIn.isEnabled(sessionId)) return;
+    // A user who switched the tools off for this conversation outranks the
+    // auto-enable; otherwise the next message would silently undo their choice.
+    if (optIn.isDeclined(sessionId)) return;
+    try {
+      optIn.setEnabled(sessionId, true);
+      logger.info(`runtime: enabled weixin tools for channel session ${sessionId}`);
+    } catch (err) {
+      logger.warn(`runtime: failed to enable tools for ${sessionId}: ${String(err)}`);
+    }
+  }
+
+  /** Per-session tool exposure, for the tab and the status tool. */
+  toolExposure(sessionId: string): ToolExposure | undefined {
+    return this.toolOptIn?.exposure(sessionId);
+  }
+
+  /** Opt a session's tools in or out. */
+  setToolsEnabled(sessionId: string, enabled: boolean): ToolExposure {
+    const optIn = this.toolOptIn;
+    if (optIn === undefined) {
+      throw new Error("dsh-weixin: this profile has no tool registry, so tools cannot be enabled");
+    }
+    const exposure = optIn.setEnabled(sessionId, enabled);
+    logger.info(
+      `runtime: tools ${enabled ? "enabled" : "disabled"} for session ${sessionId} (applied=${String(exposure.applied)})`,
+    );
+    return exposure;
+  }
+
   /** Sender for an account, or undefined when it is not running. */
   senderFor(accountId: string): AccountSender | undefined {
     return this.running.get(normalizeWeixinAccountId(accountId))?.sender;
@@ -286,13 +316,20 @@ export class WeixinChannelRuntime {
       });
     }
 
+    const peers: PeerSnapshot[] = this.store.list().slice(0, 50).map((binding) => ({
+      peerId: binding.peerId,
+      sessionId: binding.sessionId,
+      lastActiveAt: binding.lastActiveAt,
+      generation: binding.generation,
+    }));
+
     return {
       workspace: this.config.workspace,
       agentPreset: this.config.agentPreset,
       sessionMode: this.config.sessionMode,
       allowFrom: this.config.allowFrom,
       accounts,
-      peers: this.store.list().slice(0, 50),
+      peers,
       logFile: logger.getLogFilePath(),
     };
   }

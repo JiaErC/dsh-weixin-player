@@ -1,4 +1,4 @@
-﻿{
+{
   "compilerOptions": {
     "target": "ES2023",
     "lib": ["ES2023"],
@@ -20,5 +20,6 @@
     "rootDir": "src",
     "outDir": "lib"
   },
-  "include": ["src/**/*.ts"]
+  "include": ["src/**/*.ts"],
+  "exclude": ["src/client/**"]
 }

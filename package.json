@@ -2,7 +2,7 @@
   "name": "dsh-weixin-player",
   "version": "0.1.0",
   "private": true,
-  "description": "DeepSeek Harness 微信渠道：把微信长轮询消息接进 DSH 会话，把 agent 回复发回微信。",
+  "description": "DeepSeek Harness 微信渠道：把微信长轮询消息接进 DSH 会话，把 agent 回复发回微信；右侧栏「微信」tab 负责扫码登录与按会话启用工具。",
   "type": "module",
   "main": "lib/index.js",
   "types": "lib/types/index.d.ts",
@@ -10,6 +10,9 @@
     ".": {
       "types": "./lib/types/index.d.ts",
       "default": "./lib/index.js"
+    },
+    "./client": {
+      "default": "./lib/client.js"
     },
     "./package.json": "./package.json"
   },
@@ -20,14 +23,19 @@
     "README.zh.md"
   ],
   "scripts": {
-    "build": "tsc -p tsconfig.build.json",
-    "typecheck": "tsc --noEmit",
+    "build": "node build.mjs && tsc -p tsconfig.build.json",
+    "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.client.json",
     "test": "npm run build && node --test test/*.test.mjs",
     "clean": "node -e \"require('node:fs').rmSync('lib',{recursive:true,force:true})\""
   },
   "dsh": {
     "bundle": {
       "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": []
     }
   },
   "ilink_appid": "bot",
@@ -40,6 +48,9 @@
   },
   "devDependencies": {
     "@types/node": "^22.15.0",
+    "@types/react": "^18.3.12",
+    "esbuild": "^0.25.0",
+    "react": "^18.3.1",
     "typescript": "^5.7.0"
   }
 }

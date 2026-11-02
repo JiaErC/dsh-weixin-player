@@ -83,6 +83,8 @@ export interface ResumeAgentOptionsLike {
 /** `ctx.agents` — the agent registry. */
 export interface AgentsService {
   get(id: string): AgentLike | undefined;
+  /** Every live agent, when the registry exposes it. */
+  list?(): AgentLike[];
   create(options: CreateAgentOptionsLike): Promise<AgentHandleLike>;
   resume(options: ResumeAgentOptionsLike): Promise<AgentHandleLike>;
 }

@@ -1,28 +1,27 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 
+import type { WeixinChannelRuntime } from "../channel/runtime.js";
 import type { WeixinChannelConfig } from "../config.js";
 import type { WebRouteLike } from "../dsh/services.js";
-import type { WeixinChannelRuntime } from "../channel/runtime.js";
 import { logger } from "../protocol/util/logger.js";
+import { WEIXIN_PATHS, WEIXIN_TOOL_NAMES } from "../shared/wire.js";
+import type {
+  LoginStartPayload,
+  LoginStatusPayload,
+  StatusPayload,
+  ToolsPayload,
+} from "../shared/wire.js";
 import { isTrustedRequest } from "./trust-fence.js";
 
 /**
- * The channel's small HTTP surface on the DSH webserver.
+ * The channel's HTTP surface on the DSH webserver.
  *
- * A WeChat login needs a phone scan, so a terminal-only flow is useless in a
- * web deployment. These routes serve one self-contained page that shows the
- * account state and drives the QR handshake; the tool faces of the same actions
- * live in `src/tools`.
+ * Two consumers share it: the standalone login page (a deep link for a full
+ * status view) and the right-sidebar tab (the everyday surface). Both speak the
+ * same JSON, so the tab never needs a second implementation of the login flow.
  */
 
-const PAGE_PATH = "/dsh-weixin";
-const STATUS_PATH = "/dsh-weixin/status";
-const LOGIN_START_PATH = "/dsh-weixin/login/start";
-const LOGIN_STATUS_PATH = "/dsh-weixin/login/status";
-const LOGIN_VERIFY_PATH = "/dsh-weixin/login/verify";
-const QR_PATH = "/dsh-weixin/login/qr.png";
-
-/** Largest request body accepted; these routes only take a code and a key. */
+/** Largest request body accepted; these routes only take a code or a session id. */
 const MAX_BODY_BYTES = 4096;
 
 /** Rendered QR images, keyed by "sessionKey:startedAt". */
@@ -36,12 +35,7 @@ export interface WeixinRoutesDeps {
   trustedHosts: () => readonly string[];
 }
 
-function sendJson(
-  res: ServerResponse,
-  status: number,
-  body: unknown,
-  method: string,
-): void {
+function sendJson(res: ServerResponse, status: number, body: unknown, method: string): void {
   const payload = JSON.stringify(body);
   res.writeHead(status, {
     "Content-Type": "application/json; charset=utf-8",
@@ -80,7 +74,11 @@ async function readJsonBody(req: IncomingMessage): Promise<Record<string, unknow
     req.on("end", () => {
       try {
         const parsed: unknown = JSON.parse(Buffer.concat(chunks).toString("utf8"));
-        resolve(typeof parsed === "object" && parsed !== null ? (parsed as Record<string, unknown>) : undefined);
+        resolve(
+          typeof parsed === "object" && parsed !== null
+            ? (parsed as Record<string, unknown>)
+            : undefined,
+        );
       } catch {
         resolve(undefined);
       }
@@ -91,6 +89,35 @@ async function readJsonBody(req: IncomingMessage): Promise<Record<string, unknow
 
 function methodOf(req: IncomingMessage): string {
   return req.method ?? "GET";
+}
+
+/** Query parameter of the request URL, if it parses. */
+function queryOf(req: IncomingMessage, name: string): string | undefined {
+  try {
+    return new URL(req.url ?? "/", "http://localhost").searchParams.get(name) ?? undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Reject a request that is not a same-origin read/write of this deployment. */
+function guard(
+  req: IncomingMessage,
+  res: ServerResponse,
+  deps: WeixinRoutesDeps,
+  allowed: readonly string[],
+  path: string,
+): boolean {
+  const method = methodOf(req);
+  if (!allowed.includes(method)) {
+    sendJson(res, 405, { ok: false, error: `${method} is not allowed on ${path}` }, method);
+    return false;
+  }
+  if (!isTrustedRequest(req, deps.trustedHosts())) {
+    sendJson(res, 403, { ok: false, error: "this route only answers same-origin requests" }, method);
+    return false;
+  }
+  return true;
 }
 
 /** Render the QR for `text` as a PNG, or undefined when the library is absent. */
@@ -111,16 +138,8 @@ async function handlePage(
   res: ServerResponse,
   deps: WeixinRoutesDeps,
 ): Promise<void> {
-  const method = methodOf(req);
-  if (method !== "GET" && method !== "HEAD") {
-    sendJson(res, 405, { ok: false, error: `${method} is not allowed on ${PAGE_PATH}` }, method);
-    return;
-  }
-  if (!isTrustedRequest(req, deps.trustedHosts())) {
-    sendJson(res, 403, { ok: false, error: "this route only answers same-origin requests" }, method);
-    return;
-  }
-  sendHtml(res, renderPage(deps.config), method);
+  if (!guard(req, res, deps, ["GET", "HEAD"], WEIXIN_PATHS.page)) return;
+  sendHtml(res, renderPage(deps.config), methodOf(req));
 }
 
 async function handleStatus(
@@ -128,22 +147,13 @@ async function handleStatus(
   res: ServerResponse,
   deps: WeixinRoutesDeps,
 ): Promise<void> {
-  const method = methodOf(req);
-  if (method !== "GET" && method !== "HEAD") {
-    sendJson(res, 405, { ok: false, error: `${method} is not allowed on ${STATUS_PATH}` }, method);
-    return;
-  }
-  if (!isTrustedRequest(req, deps.trustedHosts())) {
-    sendJson(res, 403, { ok: false, error: "this route only answers same-origin requests" }, method);
-    return;
-  }
-  const latestLogin = deps.runtime.qr.latest();
-  sendJson(
-    res,
-    200,
-    { ok: true, channel: deps.runtime.snapshot(), login: latestLogin ?? null },
-    method,
-  );
+  if (!guard(req, res, deps, ["GET", "HEAD"], WEIXIN_PATHS.status)) return;
+  const payload: StatusPayload = {
+    ok: true,
+    channel: deps.runtime.snapshot(),
+    login: deps.runtime.qr.latest() ?? null,
+  };
+  sendJson(res, 200, payload, methodOf(req));
 }
 
 async function handleLoginStart(
@@ -151,15 +161,8 @@ async function handleLoginStart(
   res: ServerResponse,
   deps: WeixinRoutesDeps,
 ): Promise<void> {
-  const method = methodOf(req);
-  if (method !== "POST") {
-    sendJson(res, 405, { ok: false, error: `${method} is not allowed on ${LOGIN_START_PATH}` }, method);
-    return;
-  }
-  if (!isTrustedRequest(req, deps.trustedHosts())) {
-    sendJson(res, 403, { ok: false, error: "this route only answers same-origin requests" }, method);
-    return;
-  }
+  if (!guard(req, res, deps, ["POST"], WEIXIN_PATHS.loginStart)) return;
+
   const body = (await readJsonBody(req)) ?? {};
   const force = body.force === true;
   const accountId = typeof body.accountId === "string" ? body.accountId : undefined;
@@ -169,14 +172,15 @@ async function handleLoginStart(
       ...(force ? { force } : {}),
       ...(accountId === undefined || accountId === "" ? {} : { accountId }),
     });
-    sendJson(res, 200, { ok: true, login: snapshot }, method);
+    const payload: LoginStartPayload = { ok: true, login: snapshot };
+    sendJson(res, 200, payload, methodOf(req));
   } catch (err) {
     logger.error(`routes: login start failed: ${String(err)}`);
     sendJson(
       res,
       500,
       { ok: false, error: err instanceof Error ? err.message : String(err) },
-      method,
+      methodOf(req),
     );
   }
 }
@@ -186,25 +190,12 @@ async function handleLoginStatus(
   res: ServerResponse,
   deps: WeixinRoutesDeps,
 ): Promise<void> {
-  const method = methodOf(req);
-  if (method !== "GET" && method !== "HEAD") {
-    sendJson(res, 405, { ok: false, error: `${method} is not allowed on ${LOGIN_STATUS_PATH}` }, method);
-    return;
-  }
-  if (!isTrustedRequest(req, deps.trustedHosts())) {
-    sendJson(res, 403, { ok: false, error: "this route only answers same-origin requests" }, method);
-    return;
-  }
-
-  let sessionKey: string | undefined;
-  try {
-    sessionKey = new URL(req.url ?? "/", "http://localhost").searchParams.get("sessionKey") ?? undefined;
-  } catch {
-    sessionKey = undefined;
-  }
-
-  const snapshot = sessionKey === undefined ? deps.runtime.qr.latest() : deps.runtime.qr.snapshot(sessionKey);
-  sendJson(res, 200, { ok: true, login: snapshot ?? null }, method);
+  if (!guard(req, res, deps, ["GET", "HEAD"], WEIXIN_PATHS.loginStatus)) return;
+  const sessionKey = queryOf(req, "sessionKey");
+  const snapshot =
+    sessionKey === undefined ? deps.runtime.qr.latest() : deps.runtime.qr.snapshot(sessionKey);
+  const payload: LoginStatusPayload = { ok: true, login: snapshot ?? null };
+  sendJson(res, 200, payload, methodOf(req));
 }
 
 async function handleLoginVerify(
@@ -212,31 +203,23 @@ async function handleLoginVerify(
   res: ServerResponse,
   deps: WeixinRoutesDeps,
 ): Promise<void> {
-  const method = methodOf(req);
-  if (method !== "POST") {
-    sendJson(res, 405, { ok: false, error: `${method} is not allowed on ${LOGIN_VERIFY_PATH}` }, method);
-    return;
-  }
-  if (!isTrustedRequest(req, deps.trustedHosts())) {
-    sendJson(res, 403, { ok: false, error: "this route only answers same-origin requests" }, method);
-    return;
-  }
+  if (!guard(req, res, deps, ["POST"], WEIXIN_PATHS.loginVerify)) return;
 
   const body = (await readJsonBody(req)) ?? {};
   const sessionKey = typeof body.sessionKey === "string" ? body.sessionKey : "";
   const code = typeof body.code === "string" ? body.code : "";
   if (sessionKey === "" || !/^\d{1,6}$/.test(code.trim())) {
-    sendJson(res, 400, { ok: false, error: "sessionKey and a numeric code are required" }, method);
+    sendJson(res, 400, { ok: false, error: "sessionKey and a numeric code are required" }, methodOf(req));
     return;
   }
 
   const accepted = deps.runtime.qr.submitVerifyCode(sessionKey, code);
-  sendJson(
-    res,
-    accepted ? 200 : 409,
-    { ok: accepted, login: deps.runtime.qr.snapshot(sessionKey) ?? null, ...(accepted ? {} : { error: "这次登录当前不需要验证码" }) },
-    method,
-  );
+  const payload: LoginStatusPayload = {
+    ok: accepted,
+    login: deps.runtime.qr.snapshot(sessionKey) ?? null,
+    ...(accepted ? {} : { error: "这次登录当前不需要验证码" }),
+  };
+  sendJson(res, accepted ? 200 : 409, payload, methodOf(req));
 }
 
 async function handleQrImage(
@@ -244,26 +227,14 @@ async function handleQrImage(
   res: ServerResponse,
   deps: WeixinRoutesDeps,
 ): Promise<void> {
-  const method = methodOf(req);
-  if (method !== "GET" && method !== "HEAD") {
-    sendJson(res, 405, { ok: false, error: `${method} is not allowed on ${QR_PATH}` }, method);
-    return;
-  }
-  if (!isTrustedRequest(req, deps.trustedHosts())) {
-    sendJson(res, 403, { ok: false, error: "this route only answers same-origin requests" }, method);
-    return;
-  }
+  if (!guard(req, res, deps, ["GET", "HEAD"], WEIXIN_PATHS.loginQr)) return;
 
-  let sessionKey: string | undefined;
-  try {
-    sessionKey = new URL(req.url ?? "/", "http://localhost").searchParams.get("sessionKey") ?? undefined;
-  } catch {
-    sessionKey = undefined;
-  }
-  const snapshot = sessionKey === undefined ? deps.runtime.qr.latest() : deps.runtime.qr.snapshot(sessionKey);
+  const sessionKey = queryOf(req, "sessionKey");
+  const snapshot =
+    sessionKey === undefined ? deps.runtime.qr.latest() : deps.runtime.qr.snapshot(sessionKey);
   const url = snapshot?.qrcodeUrl;
   if (snapshot === undefined || url === undefined || url === "") {
-    sendJson(res, 404, { ok: false, error: "no active QR code" }, method);
+    sendJson(res, 404, { ok: false, error: "no active QR code" }, methodOf(req));
     return;
   }
 
@@ -272,7 +243,12 @@ async function handleQrImage(
   if (png === undefined) {
     const rendered = await renderQrPng(url);
     if (rendered === undefined) {
-      sendJson(res, 503, { ok: false, error: "the qrcode package is unavailable; open the link instead" }, method);
+      sendJson(
+        res,
+        503,
+        { ok: false, error: "the qrcode package is unavailable; open the link instead" },
+        methodOf(req),
+      );
       return;
     }
     png = rendered;
@@ -289,7 +265,70 @@ async function handleQrImage(
     "Cache-Control": "no-store",
     "X-Content-Type-Options": "nosniff",
   });
-  res.end(method === "HEAD" ? undefined : png);
+  res.end(methodOf(req) === "HEAD" ? undefined : png);
+}
+
+/**
+ * Read or change one session's tool exposure.
+ *
+ * GET takes the session id from the query; POST takes `{ sessionId, enabled }`.
+ * This is the button in the sidebar tab: it registers the channel's tools on
+ * that one agent's scope, leaving every preset untouched.
+ */
+async function handleTools(
+  req: IncomingMessage,
+  res: ServerResponse,
+  deps: WeixinRoutesDeps,
+): Promise<void> {
+  if (!guard(req, res, deps, ["GET", "HEAD", "POST"], WEIXIN_PATHS.tools)) return;
+  const method = methodOf(req);
+
+  // The body is read exactly once: the stream cannot be consumed twice.
+  const body = method === "POST" ? ((await readJsonBody(req)) ?? {}) : undefined;
+  const sessionId =
+    body === undefined
+      ? (queryOf(req, "sessionId") ?? "")
+      : typeof body.sessionId === "string"
+        ? body.sessionId
+        : "";
+
+  if (sessionId.trim() === "") {
+    sendJson(res, 400, { ok: false, error: "sessionId is required" }, method);
+    return;
+  }
+
+  try {
+    if (body !== undefined) {
+      const exposure = deps.runtime.setToolsEnabled(sessionId, body.enabled === true);
+      const payload: ToolsPayload = { ok: true, ...exposure, tools: WEIXIN_TOOL_NAMES };
+      sendJson(res, 200, payload, method);
+      return;
+    }
+
+    const exposure = deps.runtime.toolExposure(sessionId);
+    if (exposure === undefined) {
+      const payload: ToolsPayload = {
+        ok: true,
+        sessionId,
+        enabled: false,
+        applied: false,
+        tools: [],
+        note: "此部署没有工具注册表，无法按会话启用工具",
+      };
+      sendJson(res, 200, payload, method);
+      return;
+    }
+    const payload: ToolsPayload = { ok: true, ...exposure, tools: WEIXIN_TOOL_NAMES };
+    sendJson(res, 200, payload, method);
+  } catch (err) {
+    logger.error(`routes: tools route failed: ${String(err)}`);
+    sendJson(
+      res,
+      500,
+      { ok: false, error: err instanceof Error ? err.message : String(err) },
+      method,
+    );
+  }
 }
 
 /**
@@ -299,27 +338,40 @@ async function handleQrImage(
  */
 export function buildWeixinRoutes(deps: WeixinRoutesDeps): WebRouteLike[] {
   return [
-    { kind: "exact", path: PAGE_PATH, handler: (req, res) => handlePage(req, res, deps) },
-    { kind: "exact", path: STATUS_PATH, handler: (req, res) => handleStatus(req, res, deps) },
-    { kind: "exact", path: LOGIN_START_PATH, handler: (req, res) => handleLoginStart(req, res, deps) },
+    { kind: "exact", path: WEIXIN_PATHS.page, handler: (req, res) => handlePage(req, res, deps) },
     {
       kind: "exact",
-      path: LOGIN_STATUS_PATH,
+      path: WEIXIN_PATHS.status,
+      handler: (req, res) => handleStatus(req, res, deps),
+    },
+    {
+      kind: "exact",
+      path: WEIXIN_PATHS.loginStart,
+      handler: (req, res) => handleLoginStart(req, res, deps),
+    },
+    {
+      kind: "exact",
+      path: WEIXIN_PATHS.loginStatus,
       handler: (req, res) => handleLoginStatus(req, res, deps),
     },
     {
       kind: "exact",
-      path: LOGIN_VERIFY_PATH,
+      path: WEIXIN_PATHS.loginVerify,
       handler: (req, res) => handleLoginVerify(req, res, deps),
     },
-    { kind: "exact", path: QR_PATH, handler: (req, res) => handleQrImage(req, res, deps) },
+    {
+      kind: "exact",
+      path: WEIXIN_PATHS.loginQr,
+      handler: (req, res) => handleQrImage(req, res, deps),
+    },
+    { kind: "exact", path: WEIXIN_PATHS.tools, handler: (req, res) => handleTools(req, res, deps) },
   ];
 }
 
 /** Absolute URL of the login page for a given host:port. */
 export function loginPageUrl(host: string, port: number): string {
   const hostname = host === "0.0.0.0" ? "127.0.0.1" : host;
-  return `http://${hostname}:${port}${PAGE_PATH}`;
+  return `http://${hostname}:${port}${WEIXIN_PATHS.page}`;
 }
 
 /** The page itself: no external assets, no framework. */
@@ -345,7 +397,6 @@ function renderPage(config: WeixinChannelConfig): string {
   .qr { width: 240px; height: 240px; border-radius: 10px; border: 1px solid #e3e6ea; background: #fff; object-fit: contain; }
   button { font: inherit; padding: 8px 16px; border-radius: 8px; border: 1px solid #2563eb;
            background: #2563eb; color: #fff; cursor: pointer; }
-  button.secondary { background: transparent; color: inherit; border-color: #cbd5e1; }
   button:disabled { opacity: .55; cursor: default; }
   input { font: inherit; padding: 8px 12px; border-radius: 8px; border: 1px solid #cbd5e1; width: 140px; }
   table { width: 100%; border-collapse: collapse; font-size: 13px; }
@@ -366,6 +417,7 @@ function renderPage(config: WeixinChannelConfig): string {
       模型预设 <code id="preset">-</code> ·
       允许来源 <code id="allow">-</code>
     </p>
+    <p class="muted">日常使用请用 DSH 右侧栏的「微信」tab；本页用于查看完整状态。</p>
     <table>
       <thead><tr><th>账号</th><th>状态</th><th>最近收消息</th><th>收消息数</th><th>备注</th></tr></thead>
       <tbody id="accounts"><tr><td colspan="5" class="muted">加载中…</td></tr></tbody>
@@ -388,7 +440,8 @@ function renderPage(config: WeixinChannelConfig): string {
           <input id="verify-code" inputmode="numeric" placeholder="数字">
           <button id="verify-submit">提交</button>
         </div>
-        <p class="muted" id="login-link"></p>      </div>
+        <p class="muted" id="login-link"></p>
+      </div>
     </div>
   </div>
 
@@ -403,16 +456,20 @@ function renderPage(config: WeixinChannelConfig): string {
 </div>
 
 <script>
-const PAGE_CONFIG = ${JSON.stringify({ workspace: config.workspace, textChunkLimit: config.textChunkLimit })};
+const PATHS = ${JSON.stringify(WEIXIN_PATHS)};
+const PAGE_CONFIG = ${JSON.stringify({ workspace: config.workspace, autoEnableTools: config.autoEnableTools })};
 
 function $(id) { return document.getElementById(id); }
 function when(ms) { return ms ? new Date(ms).toLocaleString() : '-'; }
+function escapeHtml(value) {
+  return String(value).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
 
 let currentLogin = null;
 
 async function refreshStatus() {
   try {
-    const response = await fetch('/dsh-weixin/status');
+    const response = await fetch(PATHS.status);
     const data = await response.json();
     if (!data.ok) return;
     const channel = data.channel;
@@ -449,10 +506,6 @@ async function refreshStatus() {
   }
 }
 
-function escapeHtml(value) {
-  return String(value).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-}
-
 function showLogin(login) {
   currentLogin = login;
   const qr = $('qr');
@@ -476,7 +529,7 @@ function showLogin(login) {
   if (login.qrcodeUrl && login.status !== 'confirmed' && login.status !== 'already_connected') {
     qr.classList.remove('hidden');
     placeholder.classList.add('hidden');
-    qr.src = '/dsh-weixin/login/qr.png?sessionKey=' + encodeURIComponent(login.sessionKey) + '&t=' + login.startedAt;
+    qr.src = PATHS.loginQr + '?sessionKey=' + encodeURIComponent(login.sessionKey) + '&t=' + login.startedAt;
     link.innerHTML = '二维码无法显示时，把下面的链接复制到手机微信里打开：<br><a href="' +
       escapeHtml(login.qrcodeUrl) + '" target="_blank" rel="noreferrer">' + escapeHtml(login.qrcodeUrl) + '</a>';
   } else {
@@ -486,15 +539,13 @@ function showLogin(login) {
   }
 
   verifyBox.classList.toggle('hidden', !login.needsVerifyCode);
-  if (login.status === 'confirmed') {
-    refreshStatus();
-  }
+  if (login.status === 'confirmed') refreshStatus();
 }
 
 async function startLogin() {
   $('start').disabled = true;
   try {
-    const response = await fetch('/dsh-weixin/login/start', {
+    const response = await fetch(PATHS.loginStart, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ force: true })
@@ -513,7 +564,7 @@ async function submitCode() {
   if (!code || !currentLogin) return;
   $('verify-submit').disabled = true;
   try {
-    const response = await fetch('/dsh-weixin/login/verify', {
+    const response = await fetch(PATHS.loginVerify, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ sessionKey: currentLogin.sessionKey, code })
@@ -531,7 +582,7 @@ async function submitCode() {
 
 async function pollLogin() {
   try {
-    const response = await fetch('/dsh-weixin/login/status');
+    const response = await fetch(PATHS.loginStatus);
     const data = await response.json();
     if (data.ok) showLogin(data.login);
   } catch (error) {

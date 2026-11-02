@@ -11,8 +11,8 @@
 #         config:
 #           workspace: 'E:/你的工作目录'
 #
-# 微信渠道默认不启动：先扫码登录（DSH 里请求 /dsh-weixin 页面），
-# 登录成功后监控循环才会跑起来。
+# 微信渠道默认不启动：先扫码登录才会跑监控。扫码在 DSH 右侧栏的「微信」tab
+# 里（重启 dsh web 并刷新页面后出现），登录成功后监控自动启动。
 - insert:
     - id: dsh-weixin
       name: dsh-weixin-player

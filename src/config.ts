@@ -48,6 +48,14 @@ export interface WeixinChannelConfigInput {
   quoteCache?: boolean;
   /** Recent messages kept per account by the quote cache. Default `1000`. */
   quoteCacheMaxMessages?: number;
+  /**
+   * Give every WeChat conversation the `weixin_*` tools automatically.
+   *
+   * These sessions exist to talk on WeChat, so they get the tools scoped to
+   * themselves by default. Other sessions opt in from the sidebar tab. Default
+   * `true`.
+   */
+  autoEnableTools?: boolean;
   /** Per-account overrides, keyed by normalised account id. */
   accounts?: Record<
     string,
@@ -79,6 +87,7 @@ export interface WeixinChannelConfig {
   longPollTimeoutMs: number;
   quoteCache: boolean;
   quoteCacheMaxMessages: number;
+  autoEnableTools: boolean;
   accounts: NonNullable<WeixinChannelConfigInput["accounts"]>;
   botAgent: string | undefined;
   routeTag: string | undefined;
@@ -173,6 +182,7 @@ export function normalizeConfig(
     longPollTimeoutMs: asPositiveInt(input.longPollTimeoutMs, "longPollTimeoutMs", 35_000),
     quoteCache: asBoolean(input.quoteCache, "quoteCache", true),
     quoteCacheMaxMessages: asPositiveInt(input.quoteCacheMaxMessages, "quoteCacheMaxMessages", 1000),
+    autoEnableTools: asBoolean(input.autoEnableTools, "autoEnableTools", true),
     accounts: accountsInput,
     botAgent: asOptionalString(input.botAgent, "botAgent"),
     routeTag: asOptionalString(input.routeTag, "routeTag"),
