@@ -181,3 +181,45 @@ test("the icon renders an svg in currentColor", () => {
   assert.equal(element.props.stroke, "currentColor");
   assert.equal(element.props.className, "x");
 });
+
+/**
+ * Escape text the way esbuild's minifier does with its default `charset`.
+ *
+ * Non-ASCII becomes `\uXXXX` (upper-case hex), which is why grepping the built
+ * bundle for a Chinese literal finds nothing. This helper keeps those
+ * assertions honest instead of silently vacuous.
+ */
+function escapeForBundle(text) {
+  let out = "";
+  for (const char of text) {
+    const code = char.codePointAt(0);
+    out += code > 0x7f ? `\\u${code.toString(16).toUpperCase().padStart(4, "0")}` : char;
+  }
+  return out;
+}
+
+/** Whether the built bundle contains `text`, plain or escaped. */
+function bundleIncludes(source, text) {
+  return source.includes(text) || source.includes(escapeForBundle(text));
+}
+
+test("the built bundle carries the directory dialog", () => {
+  const source = readFileSync(BUNDLE, "utf8");
+
+  // The dialog is the only fixed-position surface in this bundle.
+  assert.ok(source.includes('position:"fixed"'), "expected a fixed-position modal backdrop");
+
+  for (const copy of [
+    "选择工作目录",
+    "用这个目录",
+    "上一级",
+    "可以直接输入或粘贴绝对路径，回车跳转",
+    "进到目标文件夹后点右侧按钮",
+  ]) {
+    assert.ok(bundleIncludes(source, copy), `bundle is missing the copy: ${copy}`);
+  }
+
+  // The inline picker this replaced must be gone, not merely hidden.
+  assert.equal(bundleIncludes(source, "抽屉"), false);
+  assert.equal(bundleIncludes(source, "刷新目录"), false);
+});

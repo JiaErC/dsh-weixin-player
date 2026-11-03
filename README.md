@@ -54,10 +54,13 @@ dsh plugin --profile web add link:E:/AI_dsh_plugin/dsh-weixin-player
 
 Open a session, then add the **微信** tab from the right sidebar's new-tab page:
 
-- **工作目录** → type an absolute path and **保存**, or **浏览…** through the directory
-  tree and pick one. The directory is created when missing, the choice survives a
-  restart, and it applies to *new* WeChat conversations (an existing one keeps its
-  recorded directory — send `/new` in WeChat to move it).
+- **工作目录** → type an absolute path and **保存**, or **浏览…** to open the directory
+  dialog: an editable path field at the top (type or paste a path, Enter navigates), the
+  current folder's sub-directories below, **用这个目录** to pick. A bad path is reported
+  under the field and the dialog stays open; `Esc` or the backdrop closes it. The
+  directory is created when missing, the choice survives a restart, and it applies to
+  *new* WeChat conversations (an existing one keeps its recorded directory — send `/new`
+  in WeChat to move it).
 - **开始登录** → scan the QR with the WeChat app; type the numeric code when the phone
   asks for one.
 - **本会话的微信工具 → 启用** → this conversation, and only this one, gains the tools
@@ -105,6 +108,22 @@ The suite includes an end-to-end test that stubs `fetch` at the network boundary
 drives the real long-poll loop, inbound pipeline, agent manager and outbound send path,
 plus per-session tool opt-in/opt-out/persistence and a client-bundle test that
 materializes `lib/client.js` the way DSH's module loader does.
+
+## Note on the product name in WeChat's scan dialog
+
+After scanning, WeChat shows a dialog naming **OpenClaw** / 微信ClawBot. That copy is
+WeChat's own, and the plugin cannot change it:
+
+1. `POST ilink/bot/get_bot_qrcode?bot_type=3` takes only `{ local_token_list }` — the
+   protocol has no display-name field at all.
+2. The QR payload is one opaque id: `https://liteapp.weixin.qq.com/q/7GiQu1?qrcode=<id>&bot_type=3`;
+   the dialog is rendered by that WeChat-side page.
+3. Only `bot_type=3` is accepted (1/2/4/0 return `ret: 2`), so there is no alternative
+   product template to select.
+
+Nothing in this repository prints that name any more, and the only self-declared field
+(`bot_agent`, default `DSH/0.1`) is observability-only per the upstream protocol. To make
+the conversation itself read **DeepSeek Harness**, rename the bot inside WeChat.
 
 ## Licence
 

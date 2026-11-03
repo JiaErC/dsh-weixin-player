@@ -123,8 +123,7 @@ export const input: CSSProperties = {
 };
 
 /** Status pill. */
-export function pill(color: string): CSSProperties {
-  return {
+export function pill(color: string): CSSProperties {  return {
     display: "inline-block",
     padding: "0 8px",
     borderRadius: 999,
@@ -198,4 +197,65 @@ export const pickerRow: CSSProperties = {
   whiteSpace: "nowrap",
   overflow: "hidden",
   textOverflow: "ellipsis",
+};
+
+/**
+ * Full-viewport backdrop behind the directory dialog.
+ *
+ * `position: fixed` (not `absolute`) so the dialog escapes the sidebar's own
+ * scroll container; the high z-index puts it above DSH's panels without
+ * touching any of their styles.
+ */
+export const modalBackdrop: CSSProperties = {
+  position: "fixed",
+  inset: 0,
+  zIndex: 2147483000,
+  display: "flex",
+  alignItems: "center",
+  justifyContent: "center",
+  padding: 16,
+  background: "rgba(0, 0, 0, 0.42)",
+};
+
+/** The dialog surface. */
+export const modalPanel: CSSProperties = {
+  display: "flex",
+  flexDirection: "column",
+  width: "min(560px, 100%)",
+  maxHeight: "min(72vh, 640px)",
+  minHeight: 280,
+  border: `1px solid ${token.border}`,
+  borderRadius: 10,
+  background: token.raised,
+  color: token.text,
+  boxShadow: "0 18px 50px rgba(0, 0, 0, 0.28)",
+  overflow: "hidden",
+};
+
+/** Dialog title row. */
+export const modalHeader: CSSProperties = {
+  display: "flex",
+  alignItems: "center",
+  justifyContent: "space-between",
+  gap: 8,
+  padding: "10px 12px",
+  borderBottom: `1px solid ${token.hairline}`,
+};
+
+/** Scrollable middle section of the dialog. */
+export const modalBody: CSSProperties = {
+  flex: "1 1 auto",
+  minHeight: 0,
+  overflowY: "auto",
+  padding: "8px 6px",
+};
+
+/** Dialog footer with the primary actions. */
+export const modalFooter: CSSProperties = {
+  display: "flex",
+  alignItems: "center",
+  justifyContent: "space-between",
+  gap: 8,
+  padding: "10px 12px",
+  borderTop: `1px solid ${token.hairline}`,
 };

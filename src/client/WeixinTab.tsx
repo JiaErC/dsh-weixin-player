@@ -44,9 +44,14 @@ import {
   input,
   link,
   meta,
+  modalBackdrop,
+  modalBody,
+  modalFooter,
+  modalHeader,
+  modalPanel,
   panel,
-  pill,
   pickerRow,
+  pill,
   primaryButton,
   qrFrame,
   qrPlaceholder,
@@ -116,88 +121,129 @@ function AccountLine({ channel }: { channel: ChannelSnapshot }): ReactElement {
   );
 }
 
-/** Directory picker: a parent link plus one row per sub-directory. */
-function DirectoryPicker({
+/**
+ * The directory dialog.
+ *
+ * A real modal rather than an inline list: picking a folder is a small task of
+ * its own, and it needs room for a path field at the top plus a scrolling list.
+ * The backdrop is \`position: fixed\` so it covers the viewport instead of the
+ * sidebar's scroll box, which is why the dialog is usable in a narrow pane.
+ */
+function DirectoryModal({
   listing,
+  draft,
   busy,
-  onEnter,
+  error,
+  onDraftChange,
+  onNavigate,
   onPick,
   onClose,
 }: {
-  listing: DirectoryListingPayload;
+  listing: DirectoryListingPayload | null;
+  draft: string;
   busy: boolean;
-  onEnter: (path: string) => void;
+  error: string | null;
+  onDraftChange: (value: string) => void;
+  onNavigate: (path: string) => void;
   onPick: (path: string) => void;
   onClose: () => void;
 }): ReactElement {
+  const currentPath = listing === null ? "" : listing.path;
   return (
     <div
-      style={{
-        marginTop: 8,
-        border: `1px solid ${token.hairline}`,
-        borderRadius: 6,
-        background: token.surface,
-        overflow: "hidden",
+      style={modalBackdrop}
+      role="presentation"
+      onClick={(event) => {
+        // Only the backdrop itself closes the dialog, not a click inside it.
+        if (event.target === event.currentTarget) onClose();
       }}
     >
-      <div
-        style={{
-          padding: "4px 8px",
-          borderBottom: `1px solid ${token.hairline}`,
-          fontFamily: token.mono,
-          fontSize: 11,
-          wordBreak: "break-all",
-          color: token.textSecondary,
-        }}
-      >
-        {listing.path}
-      </div>
-      <div style={{ maxHeight: 180, overflowY: "auto" }}>
-        {listing.parent !== null && (
-          <button
-            type="button"
-            disabled={busy}
-            onClick={() => onEnter(listing.parent as string)}
-            style={{ ...pickerRow, color: token.textSecondary }}
-          >
-            ↑ 上一级
+      <div style={modalPanel} role="dialog" aria-modal="true" aria-label="选择工作目录">
+        <div style={modalHeader}>
+          <span style={title}>选择工作目录</span>
+          <button type="button" onClick={onClose} style={secondaryButton} aria-label="关闭">
+            ×
           </button>
-        )}
-        {listing.entries.length === 0 && (
-          <div style={{ ...pickerRow, color: token.textTertiary, cursor: "default" }}>
-            没有子目录
+        </div>
+
+        <div style={{ padding: "8px 12px 0" }}>
+          <div style={row}>
+            <input
+              style={{ ...input, flex: "1 1 180px", width: "100%", fontFamily: token.mono }}
+              value={draft}
+              placeholder="可以直接输入或粘贴绝对路径，回车跳转"
+              onChange={(event) => onDraftChange(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter") onNavigate(draft);
+              }}
+              autoFocus
+            />
+            <button
+              type="button"
+              disabled={busy}
+              onClick={() => onNavigate(draft)}
+              style={{ ...secondaryButton, ...(busy ? disabled : {}) }}
+            >
+              转到
+            </button>
           </div>
-        )}
-        {listing.entries.map((entry) => (
-          <button
-            key={entry.path}
-            type="button"
-            disabled={busy}
-            onClick={() => onEnter(entry.path)}
-            style={pickerRow}
-            title={entry.path}
-          >
-            📁 {entry.name}
-          </button>
-        ))}
-        {listing.truncated && (
-          <div style={{ ...pickerRow, color: token.textTertiary, cursor: "default" }}>
-            目录过多，只显示前 500 个
+          <p style={{ ...meta, marginTop: 6 }}>
+            {currentPath === "" ? "读取中…" : currentPath}
+          </p>
+          {error !== null && <p style={errorText}>{error}</p>}
+        </div>
+
+        <div style={modalBody}>
+          {listing !== null && listing.parent !== null && (
+            <button
+              type="button"
+              disabled={busy}
+              onClick={() => onNavigate(listing.parent as string)}
+              style={{ ...pickerRow, color: token.textSecondary }}
+            >
+              ↑ 上一级
+            </button>
+          )}
+          {listing !== null && listing.entries.length === 0 && (
+            <div style={{ ...pickerRow, color: token.textTertiary, cursor: "default" }}>
+              这个目录下没有子目录
+            </div>
+          )}
+          {listing?.entries.map((entry) => (
+            <button
+              key={entry.path}
+              type="button"
+              disabled={busy}
+              onClick={() => onNavigate(entry.path)}
+              style={pickerRow}
+              title={entry.path}
+            >
+              📁 {entry.name}
+            </button>
+          ))}
+          {listing !== null && listing.truncated && (
+            <div style={{ ...pickerRow, color: token.textTertiary, cursor: "default" }}>
+              目录过多，只显示前 500 个
+            </div>
+          )}
+        </div>
+
+        <div style={modalFooter}>
+          <span style={hint}>进到目标文件夹后点右侧按钮</span>
+          <div style={{ display: "flex", gap: 8 }}>
+            <button type="button" onClick={onClose} style={secondaryButton}>
+              取消
+            </button>
+            <button
+              type="button"
+              disabled={busy || listing === null}
+              onClick={() => onPick(currentPath)}
+              style={{ ...primaryButton, ...(busy || listing === null ? disabled : {}) }}
+            >
+              用这个目录
+            </button>
           </div>
-        )}
-      </div>
-      <div style={{ display: "flex", gap: 8, padding: 8, borderTop: `1px solid ${token.hairline}` }}>
-        <button
-          type="button"
-          disabled={busy}
-          onClick={() => onPick(listing.path)}
-          style={{ ...primaryButton, ...(busy ? disabled : {}) }}
-        >
-          用这个目录
-        </button>
-        <button type="button" onClick={onClose} style={secondaryButton}>
-          收起
-        </button>
+        </div>
       </div>
     </div>
   );
@@ -215,6 +261,12 @@ export function WeixinTab({ sessionId }: WeixinTabProps): ReactElement {
   const [workspace, setWorkspaceState] = useState<WorkspacePayload | null>(null);
   const [workspaceDraft, setWorkspaceDraft] = useState("");
   const [browsing, setBrowsing] = useState<DirectoryListingPayload | null>(null);
+  /** Whether the directory dialog is open. */
+  const [browseOpen, setBrowseOpen] = useState(false);
+  /** What the dialog's top path field shows (editable, independent of `browsing`). */
+  const [browseDraft, setBrowseDraft] = useState("");
+  /** Why the last navigation inside the dialog failed. */
+  const [browseError, setBrowseError] = useState<string | null>(null);
   const [code, setCode] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -290,31 +342,68 @@ export function WeixinTab({ sessionId }: WeixinTabProps): ReactElement {
       const next = await saveWorkspace(value);
       setWorkspaceState(next);
       setWorkspaceDraft(next.path);
-      setBrowsing(null);
+      // A save ends the dialog's job, whichever path it came from.
+      setBrowseOpen(false);
+      setBrowseError(null);
       setNotice(
         next.source === "config"
           ? "已恢复为配置里的工作目录。"
           : `已保存：${next.path}${next.writable ? "" : "（该目录当前不可写）"}`,
       );
     } catch (err) {
-      setError(errorMessageOf(err));
+      const message = errorMessageOf(err);
+      setError(message);
+      // The dialog may be the surface the save came from, so the message has to
+      // be visible there too; it is cleared the next time the dialog opens.
+      setBrowseError(message);
     } finally {
       setBusy(false);
     }
   }, []);
 
-  /** Open (or navigate) the directory picker. */
+  /**
+   * Navigate the dialog to `path` (or reload the current directory).
+   *
+   * A failure is reported **inside** the dialog and the dialog stays open: the
+   * user is mid-typing, so closing on a typo would lose their place.
+   */
   const browse = useCallback(async (path?: string) => {
     setBusy(true);
-    setError(null);
+    setBrowseError(null);
     try {
-      setBrowsing(await fetchDirs(path));
+      const listing = await fetchDirs(path);
+      setBrowsing(listing);
+      setBrowseDraft(listing.path);
     } catch (err) {
-      setError(errorMessageOf(err));
+      setBrowseError(errorMessageOf(err));
     } finally {
       setBusy(false);
     }
   }, []);
+
+  /** Open the dialog at the current workspace. */
+  const openBrowser = useCallback(() => {
+    setBrowseOpen(true);
+    // Always start from the workspace actually in effect, not from wherever the
+    // last browsing session ended.
+    void browse(workspace?.path);
+  }, [browse, workspace]);
+
+  /** Close the dialog and forget its transient state. */
+  const closeBrowser = useCallback(() => {
+    setBrowseOpen(false);
+    setBrowseError(null);
+  }, []);
+
+  // Escape closes the dialog, the way every other modal in the app behaves.
+  useEffect(() => {
+    if (!browseOpen) return;
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") closeBrowser();
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [browseOpen, closeBrowser]);
 
   /** Toggle this session's WeChat tools. */
   const toggleTools = useCallback(async () => {
@@ -413,31 +502,25 @@ export function WeixinTab({ sessionId }: WeixinTabProps): ReactElement {
           <button
             type="button"
             disabled={busy}
-            onClick={() => void browse(browsing?.path ?? workspace?.path)}
+            onClick={openBrowser}
             style={{ ...secondaryButton, ...(busy ? disabled : {}) }}
           >
-            {browsing === null ? "浏览…" : "刷新目录"}
+            浏览…
           </button>
-          {browsing !== null && (
-            <button
-              type="button"
-              disabled={busy}
-              onClick={() => {
-                setBrowsing(null);
-              }}
-              style={secondaryButton}
-            >
-              收起
-            </button>
-          )}
         </div>
-        {browsing !== null && (
-          <DirectoryPicker
+        {browseOpen && (
+          <DirectoryModal
             listing={browsing}
+            draft={browseDraft}
             busy={busy}
-            onEnter={(path) => void browse(path)}
-            onPick={(path) => void persistWorkspace(path)}
-            onClose={() => setBrowsing(null)}
+            error={browseError}
+            onDraftChange={setBrowseDraft}
+            onNavigate={(path) => void browse(path)}
+            onPick={(path) => {
+              setWorkspaceDraft(path);
+              void persistWorkspace(path);
+            }}
+            onClose={closeBrowser}
           />
         )}
         <p style={hint}>
