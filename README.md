@@ -20,8 +20,12 @@ Full Chinese documentation (the primary one): [README.zh.md](README.zh.md).
 
 ## What it does
 
-- **A「微信」tab in DSH's own right sidebar** — scan the QR, watch the account state,
-  and switch the WeChat tools on for the conversation you are looking at.
+- **A「微信」tab in DSH's own right sidebar** — pick the working directory, scan the
+  QR, watch the account state, and switch the WeChat tools on for the conversation you
+  are looking at.
+- **The working directory is the user's choice** — it defaults to wherever `dsh web`
+  was started, but the tab changes it (a path field plus a directory browser), persists
+  the choice, and applies it to *new* WeChat conversations only.
 - **Per-session tools, not per-preset** — one click registers
   `weixin_send` / `weixin_login` / `weixin_status` on that *one* agent's scope. No
   agent preset is touched, the session's preset does not matter, and the choice is
@@ -50,6 +54,10 @@ dsh plugin --profile web add link:E:/AI_dsh_plugin/dsh-weixin-player
 
 Open a session, then add the **微信** tab from the right sidebar's new-tab page:
 
+- **工作目录** → type an absolute path and **保存**, or **浏览…** through the directory
+  tree and pick one. The directory is created when missing, the choice survives a
+  restart, and it applies to *new* WeChat conversations (an existing one keeps its
+  recorded directory — send `/new` in WeChat to move it).
 - **开始登录** → scan the QR with the WeChat app; type the numeric code when the phone
   asks for one.
 - **本会话的微信工具 → 启用** → this conversation, and only this one, gains the tools

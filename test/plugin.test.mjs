@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync } from "node:fs";
+import { mkdirSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -242,22 +242,36 @@ test("the plugin mounts routes and tools, then answers a WeChat message end to e
 
   plugin.apply(host.ctx, { workspace: "/tmp/workspace", markdown: true });
 
+  // Dispose even when an assertion below fails: a live monitor keeps timers and
+  // sockets alive, and an undisposed run would hang the whole test process.
+  t.after(() => {
+    for (const dispose of disposers) {
+      try {
+        dispose();
+      } catch {
+        // best effort
+      }
+    }
+  });
+
   // Mounting is asynchronous: wait for the routes the page needs.
   assert.ok(
-    await waitFor(() => host.registeredRoutes.length === 7),
-    `expected 7 routes, got ${host.registeredRoutes.map((route) => route.path).join(", ")}`,
+    await waitFor(() => host.registeredRoutes.length === 9),
+    `expected 9 routes, got ${host.registeredRoutes.map((route) => route.path).join(", ")}`,
   );
 
   assert.deepEqual(
     host.registeredRoutes.map((route) => route.path).sort(),
     [
       "/dsh-weixin",
+      "/dsh-weixin/fs",
       "/dsh-weixin/login/qr.png",
       "/dsh-weixin/login/start",
       "/dsh-weixin/login/status",
       "/dsh-weixin/login/verify",
       "/dsh-weixin/status",
       "/dsh-weixin/tools",
+      "/dsh-weixin/workspace",
     ],
   );
 
@@ -274,7 +288,8 @@ test("the plugin mounts routes and tools, then answers a WeChat message end to e
   const outcome = host.serviceCalls.find((call) => call.type === "create");
   assert.ok(outcome, "expected the channel to create an agent session");
   assert.equal(outcome.options.agentOptions.model, "deepseek-flash");
-  assert.equal(outcome.options.meta.cwd, "/tmp/workspace");
+  // The channel normalises the workspace, so the session cwd is absolute.
+  assert.equal(outcome.options.meta.cwd, path.resolve("/tmp/workspace"));
 
   const followup = host.serviceCalls.find((call) => call.type === "followup");
   assert.ok(followup, "expected one driven turn");
@@ -429,5 +444,76 @@ test("the tools route turns the switch on and off for one live session only", as
   optIn.close();
   await agentA.dispose();
   await agentB.dispose();
+  await runtime.stop();
+});
+
+test("changing the workspace applies to the next conversation, not the running one", async () => {
+  const host = makeHost();
+  const config = (await import("../lib/config.js")).normalizeConfig(
+    { workspace: "/tmp/first" },
+    "/tmp/first",
+  );
+  const runtimeModule = await import("../lib/channel/runtime.js");
+  const runtime = new runtimeModule.WeixinChannelRuntime({ services: host.services, config });
+
+  // The configured value is in effect until the user picks something.
+  const before = runtime.workspacePayload();
+  assert.equal(before.source, "config");
+  assert.equal(before.path, path.resolve("/tmp/first"));
+
+  // A relative path is refused with a user-facing message.
+  assert.throws(() => runtime.setWorkspace("relative/dir"), /绝对路径/);
+
+  const target = path.join(mkdtempSync(path.join(tmpdir(), "weixin-ws-")), "project");
+  const after = runtime.setWorkspace(target);
+  assert.equal(after.source, "settings");
+  assert.equal(after.path, target);
+  assert.equal(after.exists, true);
+  assert.equal(after.writable, true);
+
+  // The next session created for a peer uses the new directory.
+  const firstPeer = runtime.store.resolve("acc-im-bot", "ws@im.wechat");
+  void runtime.sessions
+    .runTurn({
+      binding: firstPeer,
+      content: [{ type: "text", text: "hi" }],
+      source: { kind: "user" },
+    })
+    .catch(() => undefined);
+  await waitFor(() => host.serviceCalls.some((call) => call.type === "followup"));
+  const created = host.serviceCalls.find((call) => call.type === "create");
+  assert.ok(created !== undefined);
+  assert.equal(created.options.meta.cwd, target);
+
+  // Going back to the configured value is one empty save.
+  const restored = runtime.setWorkspace("");
+  assert.equal(restored.source, "config");
+  assert.equal(restored.path, path.resolve("/tmp/first"));
+
+  await runtime.stop();
+});
+
+test("the fs route lists directories for the picker", async () => {
+  const host = makeHost();
+  const config = (await import("../lib/config.js")).normalizeConfig({}, "/tmp/workspace");
+  const runtimeModule = await import("../lib/channel/runtime.js");
+  const runtime = new runtimeModule.WeixinChannelRuntime({ services: host.services, config });
+
+  const root = mkdtempSync(path.join(tmpdir(), "weixin-fs-"));
+  mkdirSync(path.join(root, "alpha"));
+  mkdirSync(path.join(root, "beta"));
+
+  const { buildWeixinRoutes } = await import("../lib/host/routes.js");
+  const routes = buildWeixinRoutes({ runtime, config, trustedHosts: () => [] });
+  const fsRoute = routes.find((route) => route.path === "/dsh-weixin/fs");
+  assert.ok(fsRoute !== undefined);
+
+  const listing = runtime.listDirectory(root);
+  assert.equal(listing.ok, true);
+  assert.deepEqual(
+    listing.entries.map((entry) => entry.name),
+    ["alpha", "beta"],
+  );
+
   await runtime.stop();
 });

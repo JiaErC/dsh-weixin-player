@@ -182,3 +182,20 @@ export const link: CSSProperties = {
   textDecoration: "none",
   fontSize: 11,
 };
+
+/** One row inside the directory picker (a button styled as a list line). */
+export const pickerRow: CSSProperties = {
+  display: "block",
+  width: "100%",
+  textAlign: "left",
+  font: "inherit",
+  fontSize: 12,
+  padding: "4px 8px",
+  border: "none",
+  background: "transparent",
+  color: token.text,
+  cursor: "pointer",
+  whiteSpace: "nowrap",
+  overflow: "hidden",
+  textOverflow: "ellipsis",
+};

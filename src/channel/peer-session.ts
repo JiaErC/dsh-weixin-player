@@ -156,6 +156,14 @@ export interface AgentSessionDeps {
   config: WeixinChannelConfig;
   tracker: { begin(sessionId: string): Promise<TurnOutcome>; abort(sessionId: string): void };
   /**
+   * Working directory for a newly created session, read per call.
+   *
+   * A function rather than a string because the user may change the channel's
+   * workspace from the sidebar tab while the channel is running; the next
+   * conversation must pick up the new value without a restart.
+   */
+  workspace: () => string;
+  /**
    * Called once per newly created or resumed agent, before its first turn.
    *
    * The channel uses it to give its own conversations the WeChat tools without
@@ -261,7 +269,7 @@ export class AgentSessionManager {
 
     const composition = await this.composition();
     const agentOptions = this.agentOptions();
-    const cwd = this.deps.config.workspace;
+    const cwd = this.deps.workspace();
 
     if (await this.isPersisted(binding.sessionId)) {
       const handle = await this.agents.resume({

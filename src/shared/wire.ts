@@ -15,7 +15,49 @@ export const WEIXIN_PATHS = {
   loginVerify: "/dsh-weixin/login/verify",
   loginQr: "/dsh-weixin/login/qr.png",
   tools: "/dsh-weixin/tools",
+  workspace: "/dsh-weixin/workspace",
+  dirs: "/dsh-weixin/fs",
 } as const;
+
+/** Where the effective workspace value came from. */
+export type WorkspaceSource = "settings" | "config";
+
+/** `GET`/`POST /dsh-weixin/workspace`. */
+export interface WorkspacePayload {
+  ok: true;
+  /** Absolute, normalised directory the next WeChat session will use. */
+  path: string;
+  /** `settings` when a user picked it in the tab, `config` when the row set it. */
+  source: WorkspaceSource;
+  /** Whether the directory exists right now. */
+  exists: boolean;
+  /** Whether this process can write there; a read-only project is still valid. */
+  writable: boolean;
+}
+
+/** `POST /dsh-weixin/workspace` request. */
+export interface WorkspaceUpdateRequest {
+  /** Absolute path, or an empty string to fall back to the configured value. */
+  workspace: string;
+}
+
+/** One directory the picker can enter. */
+export interface DirectoryEntry {
+  name: string;
+  path: string;
+}
+
+/** `GET /dsh-weixin/fs?path=…` */
+export interface DirectoryListingPayload {
+  ok: true;
+  path: string;
+  /** Parent directory, or null at a filesystem root. */
+  parent: string | null;
+  /** Sub-directories, alphabetically; dot-directories are omitted. */
+  entries: DirectoryEntry[];
+  /** True when the folder has more entries than were returned. */
+  truncated: boolean;
+}
 
 /** Tool names the channel can expose to a session. */
 export const WEIXIN_TOOL_NAMES = ["weixin_send", "weixin_login", "weixin_status"] as const;
@@ -51,7 +93,10 @@ export interface PeerSnapshot {
 
 /** Everything the status route reports about the channel. */
 export interface ChannelSnapshot {
+  /** Effective workspace for new WeChat sessions. */
   workspace: string;
+  /** Whether `workspace` came from the tab's setting or from the Loader row. */
+  workspaceSource: WorkspaceSource;
   agentPreset: string | undefined;
   sessionMode: string;
   allowFrom: readonly string[];

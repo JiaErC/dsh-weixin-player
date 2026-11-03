@@ -61,6 +61,43 @@ function makeRuntime(overrides = {}) {
     setToolsEnabled() {
       throw new Error("dsh-weixin: this profile has no tool registry, so tools cannot be enabled");
     },
+    // Workspace routes: a tiny in-memory stand-in for the real store.
+    ...(overrides.workspaceApi === false
+      ? {}
+      : {
+          currentWorkspace: "/tmp/workspace",
+          workspacePayload() {
+            return {
+              ok: true,
+              path: this.currentWorkspace,
+              source: this.currentWorkspace === "/tmp/workspace" ? "config" : "settings",
+              exists: true,
+              writable: true,
+            };
+          },
+          setWorkspace(input) {
+            calls.push({ type: "setWorkspace", input });
+            if (input.trim() === "") {
+              this.currentWorkspace = "/tmp/workspace";
+              return this.workspacePayload();
+            }
+            if (!input.trim().match(/^[A-Za-z]:[\\/]|^\//)) {
+              throw new Error(`请填写绝对路径（例如 E:\\work\\project），收到的是 ${input}`);
+            }
+            this.currentWorkspace = path.resolve(input);
+            return this.workspacePayload();
+          },
+          listDirectory(target) {
+            calls.push({ type: "listDirectory", target });
+            return {
+              ok: true,
+              path: target ?? this.currentWorkspace,
+              parent: "/",
+              entries: [{ name: "child", path: path.join(target ?? this.currentWorkspace, "child") }],
+              truncated: false,
+            };
+          },
+        }),
   };
 }
 
@@ -256,5 +293,102 @@ test("the tools route only answers same-origin requests", async () => {
       body: JSON.stringify({ sessionId: "session-a", enabled: true }),
     });
     assert.equal(response.status, 403);
+  });
+});
+
+test("the workspace route reports the effective directory", async () => {
+  const runtime = makeRuntime();
+  const routes = buildWeixinRoutes({ runtime, config: CONFIG, trustedHosts: () => [] });
+
+  await withServer(routes, async (base) => {
+    const response = await fetch(`${base}/dsh-weixin/workspace`);
+    assert.equal(response.status, 200);
+    const body = await response.json();
+    assert.equal(body.path, "/tmp/workspace");
+    assert.equal(body.source, "config");
+    assert.equal(body.exists, true);
+  });
+});
+
+test("the workspace route saves a picked directory", async () => {
+  const runtime = makeRuntime();
+  const routes = buildWeixinRoutes({ runtime, config: CONFIG, trustedHosts: () => [] });
+
+  await withServer(routes, async (base) => {
+    const response = await fetch(`${base}/dsh-weixin/workspace`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ workspace: "/srv/projects/alpha" }),
+    });
+    assert.equal(response.status, 200);
+    const body = await response.json();
+    assert.equal(body.path, path.resolve("/srv/projects/alpha"));
+    assert.equal(body.source, "settings");
+
+    // Going back to config is an empty save.
+    const cleared = await fetch(`${base}/dsh-weixin/workspace`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ workspace: "" }),
+    });
+    assert.equal((await cleared.json()).source, "config");
+  });
+});
+
+test("an unusable workspace is a 400 with the reason", async () => {
+  const runtime = makeRuntime();
+  const routes = buildWeixinRoutes({ runtime, config: CONFIG, trustedHosts: () => [] });
+
+  await withServer(routes, async (base) => {
+    const response = await fetch(`${base}/dsh-weixin/workspace`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ workspace: "relative/dir" }),
+    });
+    assert.equal(response.status, 400);
+    const body = await response.json();
+    assert.equal(body.ok, false);
+    assert.match(body.error, /绝对路径/);
+  });
+});
+
+test("the fs route lists sub-directories", async () => {
+  const runtime = makeRuntime();
+  const routes = buildWeixinRoutes({ runtime, config: CONFIG, trustedHosts: () => [] });
+
+  await withServer(routes, async (base) => {
+    const response = await fetch(`${base}/dsh-weixin/fs?path=${encodeURIComponent("/srv")}`);
+    assert.equal(response.status, 200);
+    const body = await response.json();
+    assert.equal(body.path, "/srv");
+    assert.equal(body.entries.length, 1);
+    assert.equal(body.entries[0].name, "child");
+    assert.deepEqual(runtime.calls.at(-1), { type: "listDirectory", target: "/srv" });
+  });
+});
+
+test("the fs route defaults to the current workspace", async () => {
+  const runtime = makeRuntime();
+  const routes = buildWeixinRoutes({ runtime, config: CONFIG, trustedHosts: () => [] });
+
+  await withServer(routes, async (base) => {
+    const response = await fetch(`${base}/dsh-weixin/fs`);
+    assert.equal(response.status, 200);
+    assert.equal((await response.json()).path, "/tmp/workspace");
+  });
+});
+
+test("the workspace routes are fenced against cross-origin writes", async () => {
+  const runtime = makeRuntime();
+  const routes = buildWeixinRoutes({ runtime, config: CONFIG, trustedHosts: () => [] });
+
+  await withServer(routes, async (base) => {
+    const response = await fetch(`${base}/dsh-weixin/workspace`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Origin: "https://evil.example" },
+      body: JSON.stringify({ workspace: "/srv/projects/alpha" }),
+    });
+    assert.equal(response.status, 403);
+    assert.equal(runtime.calls.some((call) => call.type === "setWorkspace"), false);
   });
 });

@@ -157,7 +157,9 @@ export function buildWeixinTools(runtime: WeixinChannelRuntime): ToolDefinitionL
       async execute() {
         const snapshot = runtime.snapshot();
         const lines: string[] = [];
-        lines.push(`workspace: ${snapshot.workspace}`);
+        lines.push(
+          `workspace: ${snapshot.workspace} (${snapshot.workspaceSource === "settings" ? "chosen in the tab" : "from config"})`,
+        );
         lines.push(`agent preset: ${snapshot.agentPreset ?? "deployment default"}`);
         lines.push(`allowFrom: ${snapshot.allowFrom.length === 0 ? "account owner" : snapshot.allowFrom.join(", ")}`);
         lines.push(`log: ${snapshot.logFile}`);

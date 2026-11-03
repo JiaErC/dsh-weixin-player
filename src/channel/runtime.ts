@@ -12,20 +12,28 @@ import { WeixinQrLoginManager } from "../protocol/auth/login-qr.js";
 import { initializeQuoteStore } from "../protocol/messaging/quote-store.js";
 import { resetRuntimeSettings, setRuntimeSettings } from "../protocol/runtime-settings.js";
 import { logger } from "../protocol/util/logger.js";
-import type { AccountSnapshot, ChannelSnapshot, PeerSnapshot } from "../shared/wire.js";
+import type { AccountSnapshot, ChannelSnapshot, DirectoryListingPayload, PeerSnapshot, WorkspacePayload } from "../shared/wire.js";
 import type { WeixinToolOptIn, ToolExposure } from "../tools/optin.js";
 import { handleInboundMessage } from "./handle-message.js";
 import { createConfigManager, createMonitorStatus, monitorWeixinAccount } from "./monitor.js";
 import type { MonitorStatus } from "./monitor.js";
 import { AccountSender } from "./outbound.js";
 import { AgentSessionManager, PeerSessionStore } from "./peer-session.js";
+import {
+  WeixinSettingsStore,
+  inspectWorkspace,
+  listDirectories,
+  prepareWorkspace,
+  resolveWorkspace,
+} from "./settings.js";
+import type { ResolvedWorkspace } from "./settings.js";
 import { TurnTracker } from "./turn-tracker.js";
 
 /**
  * The channel itself: one long-poll monitor per logged-in WeChat account, all
  * of them feeding the same agent-session machinery.
  *
- * Mounting the plugin does not start anything by itself 鈥?{@link start} waits
+ * Mounting the plugin does not start anything by itself — {@link start} waits
  * for the harness Loader to settle, then reconciles the accounts found on disk.
  * A later QR login re-runs the same reconcile through `onAccountsChanged`.
  */
@@ -54,6 +62,8 @@ export class WeixinChannelRuntime {
   private readonly running = new Map<string, AccountRuntime>();
   /** Per-session tool exposure; set once the definitions exist. */
   private toolOptIn: WeixinToolOptIn | undefined;
+  /** User-editable settings (workspace), persisted next to the credentials. */
+  private readonly settings = new WeixinSettingsStore();
   private readonly tracker: TurnTracker;
   private readonly stopWatchingAccounts: () => void;
   private started = false;
@@ -66,9 +76,75 @@ export class WeixinChannelRuntime {
       services: deps.services,
       config: deps.config,
       tracker: this.tracker,
+      workspace: () => this.workspace().path,
       onAgentReady: (sessionId) => this.enableToolsForChannelSession(sessionId),
     });
     this.stopWatchingAccounts = onAccountsChanged(() => this.scheduleReconcile());
+  }
+
+  /**
+   * The directory new WeChat sessions are created in.
+   *
+   * Resolution order: what the user picked in the sidebar tab, then the Loader
+   * row's `workspace`, then the process working directory.
+   */
+  workspace(): ResolvedWorkspace {
+    return resolveWorkspace(this.settings.workspace, this.config.workspace);
+  }
+
+  /** Current workspace as the tab and the status tool read it. */
+  workspacePayload(): WorkspacePayload {
+    const resolved = this.workspace();
+    // A read must not create directories; only saving does that.
+    const inspection = inspectWorkspace(resolved.path);
+    return {
+      ok: true,
+      path: resolved.path,
+      source: resolved.source,
+      exists: inspection.exists,
+      writable: inspection.writable,
+    };
+  }
+
+  /**
+   * Change the workspace new WeChat sessions use.
+   *
+   * The directory is created when missing, matching what the harness itself does
+   * before creating a session. Existing conversations keep the directory
+   * recorded in their session header, so the tab tells the user how to get a
+   * fresh one.
+   *
+   * @param input - absolute path, or an empty string to fall back to config.
+   * @throws {Error} when the path is unusable; the message is user-facing.
+   */
+  setWorkspace(input: string): WorkspacePayload {
+    const trimmed = input.trim();
+    if (trimmed === "") {
+      this.settings.workspace = undefined;
+      return this.workspacePayload();
+    }
+
+    const prepared = prepareWorkspace(trimmed);
+    if (!prepared.ok) throw new Error(prepared.error);
+
+    this.settings.workspace = prepared.path;
+    logger.info(
+      `runtime: workspace set to ${prepared.path}${prepared.created ? " (created)" : ""}${prepared.writable ? "" : " (read-only)"}`,
+    );
+    return this.workspacePayload();
+  }
+
+  /**
+   * List sub-directories for the workspace picker.
+   *
+   * @param target - absolute directory; defaults to the current workspace.
+   * @throws {Error} when the directory cannot be read; the message is user-facing.
+   */
+  listDirectory(target?: string): DirectoryListingPayload {
+    const path = target === undefined || target.trim() === "" ? this.workspace().path : target;
+    const listing = listDirectories(path);
+    if ("error" in listing) throw new Error(listing.error);
+    return { ok: true, ...listing };
   }
 
   /**
@@ -110,13 +186,14 @@ export class WeixinChannelRuntime {
     }
 
     const accounts = listWeixinAccountIds();
+    const workspace = this.workspace();
     logger.info(
-      `runtime: starting with ${accounts.length} account(s); workspace=${this.config.workspace}; preset=${this.config.agentPreset ?? "deployment default"}`,
+      `runtime: starting with ${accounts.length} account(s); workspace=${workspace.path} (${workspace.source}); preset=${this.config.agentPreset ?? "deployment default"}`,
     );
 
     if (accounts.length === 0) {
       logger.info(
-        "runtime: no WeChat account is logged in yet 鈥?open the login tab in DSH to scan the QR code",
+        "runtime: no WeChat account is logged in yet — open the login tab in DSH to scan the QR code",
       );
     }
 
@@ -152,7 +229,7 @@ export class WeixinChannelRuntime {
     }
     if (!account.configured) {
       logger.warn(
-        `runtime: account ${normalized} has no token 鈥?log in again from the DSH WeChat tab`,
+        `runtime: account ${normalized} has no token — log in again from the DSH WeChat tab`,
       );
       return;
     }
@@ -323,8 +400,10 @@ export class WeixinChannelRuntime {
       generation: binding.generation,
     }));
 
+    const workspace = this.workspace();
     return {
-      workspace: this.config.workspace,
+      workspace: workspace.path,
+      workspaceSource: workspace.source,
       agentPreset: this.config.agentPreset,
       sessionMode: this.config.sessionMode,
       allowFrom: this.config.allowFrom,

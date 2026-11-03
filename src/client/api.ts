@@ -6,10 +6,12 @@
  */
 import {
   WEIXIN_PATHS,
+  type DirectoryListingPayload,
   type StatusPayload,
   type LoginStartPayload,
   type LoginStatusPayload,
   type ToolsPayload,
+  type WorkspacePayload,
 } from "../shared/wire";
 
 /** One failed call, carrying the message the route reported. */
@@ -126,4 +128,30 @@ export async function setTools(
     payload: { sessionId, enabled },
     signal,
   });
+}
+
+/** Read the workspace new WeChat sessions are created in. */
+export async function fetchWorkspace(signal?: AbortSignal): Promise<WorkspacePayload> {
+  return request<WorkspacePayload>(WEIXIN_PATHS.workspace, { signal });
+}
+
+/** Change that workspace. An empty string falls back to the configured value. */
+export async function saveWorkspace(
+  workspace: string,
+  signal?: AbortSignal,
+): Promise<WorkspacePayload> {
+  return request<WorkspacePayload>(WEIXIN_PATHS.workspace, {
+    payload: { workspace },
+    signal,
+  });
+}
+
+/** List one directory's sub-directories for the picker. */
+export async function fetchDirs(
+  dirPath?: string,
+  signal?: AbortSignal,
+): Promise<DirectoryListingPayload> {
+  const query =
+    dirPath === undefined || dirPath === "" ? "" : `?path=${encodeURIComponent(dirPath)}`;
+  return request<DirectoryListingPayload>(`${WEIXIN_PATHS.dirs}${query}`, { signal });
 }

@@ -6,10 +6,12 @@ import type { WebRouteLike } from "../dsh/services.js";
 import { logger } from "../protocol/util/logger.js";
 import { WEIXIN_PATHS, WEIXIN_TOOL_NAMES } from "../shared/wire.js";
 import type {
+  DirectoryListingPayload,
   LoginStartPayload,
   LoginStatusPayload,
   StatusPayload,
   ToolsPayload,
+  WorkspacePayload,
 } from "../shared/wire.js";
 import { isTrustedRequest } from "./trust-fence.js";
 
@@ -332,6 +334,65 @@ async function handleTools(
 }
 
 /**
+ * Read or change the directory new WeChat sessions are created in.
+ *
+ * GET reports the effective value and where it came from; POST validates the
+ * path (creating it when missing) and persists it, so the choice survives a
+ * restart without editing the Loader row.
+ */
+async function handleWorkspace(
+  req: IncomingMessage,
+  res: ServerResponse,
+  deps: WeixinRoutesDeps,
+): Promise<void> {
+  if (!guard(req, res, deps, ["GET", "HEAD", "POST"], WEIXIN_PATHS.workspace)) return;
+  const method = methodOf(req);
+
+  try {
+    if (method === "POST") {
+      const body = (await readJsonBody(req)) ?? {};
+      const workspace = typeof body.workspace === "string" ? body.workspace : "";
+      const payload: WorkspacePayload = deps.runtime.setWorkspace(workspace);
+      sendJson(res, 200, payload, method);
+      return;
+    }
+    const payload: WorkspacePayload = deps.runtime.workspacePayload();
+    sendJson(res, 200, payload, method);
+  } catch (err) {
+    // A rejected path is a user error, not a server fault.
+    logger.warn(`routes: workspace request failed: ${String(err)}`);
+    sendJson(
+      res,
+      400,
+      { ok: false, error: err instanceof Error ? err.message : String(err) },
+      method,
+    );
+  }
+}
+
+/** List sub-directories so the tab can offer a picker instead of a blind path. */
+async function handleDirs(
+  req: IncomingMessage,
+  res: ServerResponse,
+  deps: WeixinRoutesDeps,
+): Promise<void> {
+  if (!guard(req, res, deps, ["GET", "HEAD"], WEIXIN_PATHS.dirs)) return;
+  const method = methodOf(req);
+
+  try {
+    const payload: DirectoryListingPayload = deps.runtime.listDirectory(queryOf(req, "path"));
+    sendJson(res, 200, payload, method);
+  } catch (err) {
+    sendJson(
+      res,
+      400,
+      { ok: false, error: err instanceof Error ? err.message : String(err) },
+      method,
+    );
+  }
+}
+
+/**
  * Register every route this channel owns.
  *
  * @returns the route definitions so the caller can wrap each in `ctx.effect`.
@@ -365,6 +426,12 @@ export function buildWeixinRoutes(deps: WeixinRoutesDeps): WebRouteLike[] {
       handler: (req, res) => handleQrImage(req, res, deps),
     },
     { kind: "exact", path: WEIXIN_PATHS.tools, handler: (req, res) => handleTools(req, res, deps) },
+    {
+      kind: "exact",
+      path: WEIXIN_PATHS.workspace,
+      handler: (req, res) => handleWorkspace(req, res, deps),
+    },
+    { kind: "exact", path: WEIXIN_PATHS.dirs, handler: (req, res) => handleDirs(req, res, deps) },
   ];
 }
 
@@ -473,7 +540,7 @@ async function refreshStatus() {
     const data = await response.json();
     if (!data.ok) return;
     const channel = data.channel;
-    $('workspace').textContent = channel.workspace;
+    $('workspace').textContent = channel.workspace + (channel.workspaceSource === 'settings' ? '（自定义）' : '（来自配置）');
     $('preset').textContent = channel.agentPreset || '部署默认';
     $('allow').textContent = channel.allowFrom.length ? channel.allowFrom.join(', ') : '账号主人';
     $('logfile').textContent = channel.logFile;

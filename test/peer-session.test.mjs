@@ -135,7 +135,7 @@ test("bindings survive a new store instance", () => {
 test("runTurn creates an agent with the deployment model and drives one followup", async () => {
   const { services, calls, created } = makeServices();
   const tracker = makeTracker();
-  const manager = new AgentSessionManager({ services, config: CONFIG, tracker });
+  const manager = new AgentSessionManager({ services, config: CONFIG, tracker, workspace: () => CONFIG.workspace });
   const binding = new PeerSessionStore().resolve("acc-im-bot", "turn@im.wechat");
 
   const pending = manager.runTurn({
@@ -153,6 +153,8 @@ test("runTurn creates an agent with the deployment model and drives one followup
     provider: "deepseek-official",
     model: "deepseek-flash",
   });
+  // The manager passes the provider value through verbatim; normalisation is
+  // the runtime provider's job (see test/settings.test.mjs).
   assert.equal(created[0].options.meta.cwd, "/tmp/workspace");
 
   const followup = calls.find((call) => call.type === "followup");
@@ -175,7 +177,7 @@ test("runTurn resumes a persisted session instead of creating a new one", async 
   const binding = store.resolve("acc-im-bot", "resume@im.wechat");
   const { services, created } = makeServices({ persisted: [binding.sessionId] });
   const tracker = makeTracker();
-  const manager = new AgentSessionManager({ services, config: CONFIG, tracker });
+  const manager = new AgentSessionManager({ services, config: CONFIG, tracker, workspace: () => CONFIG.workspace });
 
   void manager.runTurn({ binding, content: [{ type: "text", text: "hi" }], source: { kind: "user" } });
   await new Promise((resolve) => setImmediate(resolve));
@@ -190,7 +192,7 @@ test("runTurn resumes a persisted session instead of creating a new one", async 
 test("two turns for one peer are serialized", async () => {
   const { services, calls } = makeServices();
   const tracker = makeTracker();
-  const manager = new AgentSessionManager({ services, config: CONFIG, tracker });
+  const manager = new AgentSessionManager({ services, config: CONFIG, tracker, workspace: () => CONFIG.workspace });
   const binding = new PeerSessionStore().resolve("acc-im-bot", "serial@im.wechat");
 
   const first = manager.runTurn({ binding, content: [{ type: "text", text: "1" }], source: { kind: "user" } });
@@ -228,6 +230,7 @@ test("agentPreset is resolved and mounted inside setup", async () => {
     services,
     config: { ...CONFIG, agentPreset: "standard" },
     tracker,
+    workspace: () => CONFIG.workspace,
   });
   const binding = new PeerSessionStore().resolve("acc-im-bot", "preset@im.wechat");
 
@@ -257,6 +260,7 @@ test("agentPreset 'none' composes no preset", async () => {
     services,
     config: { ...CONFIG, agentPreset: "none" },
     tracker,
+    workspace: () => CONFIG.workspace,
   });
   const binding = new PeerSessionStore().resolve("acc-im-bot", "bare@im.wechat");
 
@@ -271,7 +275,7 @@ test("agentPreset 'none' composes no preset", async () => {
 test("cancel() forwards a user cancellation to the live agent", async () => {
   const { services, calls } = makeServices();
   const tracker = makeTracker();
-  const manager = new AgentSessionManager({ services, config: CONFIG, tracker });
+  const manager = new AgentSessionManager({ services, config: CONFIG, tracker, workspace: () => CONFIG.workspace });
   const binding = new PeerSessionStore().resolve("acc-im-bot", "cancel@im.wechat");
 
   const pending = manager.runTurn({ binding, content: [{ type: "text", text: "x" }], source: { kind: "user" } });
