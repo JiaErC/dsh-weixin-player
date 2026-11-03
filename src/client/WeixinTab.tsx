@@ -17,6 +17,7 @@ import {
   WEIXIN_PATHS,
   type ChannelSnapshot,
   type DirectoryListingPayload,
+  type PeerSnapshot,
   type QrLoginSnapshot,
   type ToolsPayload,
   type WorkspacePayload,
@@ -65,8 +66,24 @@ import {
 export interface WeixinTabProps {
   /** The session this pane belongs to; the tool switch is scoped to it. */
   sessionId?: string;
-  /** The client cordis context (unused today, kept for parity with the slot). */
+  /** The client cordis context; `uiWorkspace` is read from it to open a session. */
   ctx?: unknown;
+}
+
+/** The slice of the client context this tab reads. */
+interface ClientContextLike {
+  get?(name: string): unknown;
+}
+
+/**
+ * `uiWorkspace` — the UI's own navigation service.
+ *
+ * `openSession(target)` selects a session and shows its conversation as one
+ * navigation action (the same call DSH's sidebar and conversation list use), so
+ * jumping from this tab behaves exactly like clicking that session in the list.
+ */
+interface UiWorkspaceLike {
+  openSession?(target: string): void;
 }
 
 /** Poll cadence for the login attempt while it is in flight. */
@@ -254,7 +271,7 @@ function DirectoryModal({
  * @param props - injected session id.
  * @returns the rendered panel.
  */
-export function WeixinTab({ sessionId }: WeixinTabProps): ReactElement {
+export function WeixinTab({ sessionId, ctx }: WeixinTabProps): ReactElement {
   const [channel, setChannel] = useState<ChannelSnapshot | null>(null);
   const [login, setLogin] = useState<QrLoginSnapshot | null>(null);
   const [tools, setToolsState] = useState<ToolsPayload | null>(null);
@@ -405,6 +422,37 @@ export function WeixinTab({ sessionId }: WeixinTabProps): ReactElement {
     return () => document.removeEventListener("keydown", onKey);
   }, [browseOpen, closeBrowser]);
 
+  /**
+   * Which WeChat conversation the jump button opens.
+   *
+   * The host orders peers by last activity, so the rules are: prefer the peer
+   * bound to *this* session (then the button just re-focuses the conversation
+   * you are already in), otherwise the most recently active one. With no peer
+   * bound yet there is nothing to open and the button stays disabled.
+   */
+  const chatTarget: PeerSnapshot | null =
+    channel === null || channel.peers.length === 0
+      ? null
+      : (channel.peers.find((peer) => peer.sessionId === sessionId) ?? channel.peers[0] ?? null);
+
+  /** Open the WeChat conversation's session in the main view. */
+  const jumpToChatSession = useCallback(() => {
+    if (chatTarget === null) return;
+    const workspace = (ctx as ClientContextLike | undefined)?.get?.("uiWorkspace") as
+      | UiWorkspaceLike
+      | undefined;
+    if (workspace?.openSession === undefined) {
+      setError("这个界面没有提供「打开会话」的能力（uiWorkspace 服务缺失）");
+      return;
+    }
+    try {
+      workspace.openSession(chatTarget.sessionId);
+      setError(null);
+    } catch (err) {
+      setError(`打开会话失败：${errorMessageOf(err)}`);
+    }
+  }, [chatTarget, ctx]);
+
   /** Toggle this session's WeChat tools. */
   const toggleTools = useCallback(async () => {
     const id = sessionRef.current;
@@ -537,22 +585,51 @@ export function WeixinTab({ sessionId }: WeixinTabProps): ReactElement {
             完整页面 ↗
           </a>
         </div>
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
-          <div>
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+            gap: 8,
+            // A narrow sidebar must stack the buttons instead of clipping them.
+            flexWrap: "wrap",
+          }}
+        >
+          <div style={{ minWidth: 0 }}>
             <span style={pill(toolsEnabled ? token.success : token.textTertiary)}>
               {toolsEnabled ? (tools?.applied ? "已启用" : "已启用（待生效）") : "未启用"}
             </span>
             <div style={meta}>{sessionId === undefined ? "（面板未绑定会话）" : sessionId}</div>
           </div>
-          <button
-            type="button"
-            onClick={() => void toggleTools()}
-            disabled={busy || sessionId === undefined}
-            style={{ ...(toolsEnabled ? secondaryButton : primaryButton), ...(busy ? disabled : {}) }}
-          >
-            {toolsEnabled ? "停用" : "启用"}
-          </button>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+            <button
+              type="button"
+              onClick={jumpToChatSession}
+              disabled={chatTarget === null}
+              title={
+                chatTarget === null
+                  ? "还没有微信会话：绑定一个微信账号，并让它在微信里发一条消息"
+                  : `打开微信会话 ${chatTarget.sessionId}（对方 ${chatTarget.peerId}）`
+              }
+              style={{ ...secondaryButton, ...(chatTarget === null ? disabled : {}) }}
+            >
+              跳转到会话
+            </button>
+            <button
+              type="button"
+              onClick={() => void toggleTools()}
+              disabled={busy || sessionId === undefined}
+              style={{ ...(toolsEnabled ? secondaryButton : primaryButton), ...(busy ? disabled : {}) }}
+            >
+              {toolsEnabled ? "停用" : "启用"}
+            </button>
+          </div>
         </div>
+        <p style={hint}>
+          {chatTarget === null
+            ? "「跳转到会话」在有了微信会话之后可用：它会打开该微信聊天对应的 DSH 会话。"
+            : `「跳转到会话」会打开微信聊天对应的 DSH 会话：${chatTarget.peerId} → ${chatTarget.sessionId}`}
+        </p>
         <p style={hint}>
           只对当前会话生效，不改动任何 Agent 预设
           {channel?.agentPreset === undefined ? "（当前用部署默认预设）" : `（当前预设：${channel.agentPreset}）`}；

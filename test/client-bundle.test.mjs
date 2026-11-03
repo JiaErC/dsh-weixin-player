@@ -172,6 +172,22 @@ test("a missing registry logs instead of throwing", () => {
   assert.ok(errors.some((message) => message.includes("sidebarRightTabs")));
 });
 
+test("the built bundle carries the jump-to-conversation button", () => {
+  const source = readFileSync(BUNDLE, "utf8");
+
+  for (const copy of [
+    "跳转到会话",
+    "打开会话失败",
+    "这个界面没有提供「打开会话」的能力",
+  ]) {
+    assert.ok(bundleIncludes(source, copy), `bundle is missing the copy: ${copy}`);
+  }
+
+  // Navigation goes through the UI's own service, not a hand-rolled URL push.
+  assert.ok(source.includes("uiWorkspace"), "expected the uiWorkspace service lookup");
+  assert.ok(source.includes("openSession"), "expected openSession to be called");
+});
+
 test("the icon renders an svg in currentColor", () => {
   const { exports } = materialize();
   const element = exports.WeixinTabIcon({ size: 16, className: "x" });

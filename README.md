@@ -65,6 +65,10 @@ Open a session, then add the **微信** tab from the right sidebar's new-tab pag
   asks for one.
 - **本会话的微信工具 → 启用** → this conversation, and only this one, gains the tools
   from its next turn on. **停用** takes them away again.
+- **跳转到会话** (left of 启用/停用) → opens the WeChat conversation's session in the main
+  view, via DSH's own `uiWorkspace.openSession()`. It targets the peer bound to *this*
+  session when there is one, otherwise the most recently active peer; with no peer bound
+  yet the button is disabled and its tooltip explains why.
 
 WeChat conversations get the tools automatically (`autoEnableTools: true`), because
 those sessions exist to talk on WeChat.
