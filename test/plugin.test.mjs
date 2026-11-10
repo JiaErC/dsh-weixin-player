@@ -117,6 +117,8 @@ function makeHost() {
   const liveAgents = new Map();
   /** session id → the tool names registered on that agent's own scope. */
   const scopedTools = new Map();
+  /** Every `permissionPresets.set(session, name)` the channel issued. */
+  const permissionCalls = [];
 
   const emitSessionEvent = (sessionId, event) => {
     for (const listener of sessionListeners) listener({ id: sessionId }, event);
@@ -189,6 +191,31 @@ function makeHost() {
       currentSelection: () => ({ provider: "deepseek-official", model: "deepseek-flash" }),
     },
     agentPresets: undefined,
+    // Permission presets: the catalog the tab offers and the `set` the channel
+    // calls on a freshly created session.
+    permissionPresets: {
+      defaultPreset: "workspace-write",
+      catalog: () => ({
+        options: [
+          { value: "read-only", name: "read-only" },
+          { value: "workspace-write", name: "workspace-write" },
+          { value: "danger-full-access", name: "danger-full-access" },
+        ],
+        defaultOptions: [
+          { value: "workspace-write", name: "workspace-write" },
+          { value: "danger-full-access", name: "danger-full-access" },
+        ],
+        defaultPreset: "workspace-write",
+      }),
+      resolve(name) {
+        const known = ["read-only", "workspace-write", "danger-full-access"];
+        if (!known.includes(name)) throw new Error(`未知权限预设 ${name}`);
+        return { sandbox: name, approval: name === "danger-full-access" ? "never" : "ask" };
+      },
+      set(session, name) {
+        permissionCalls.push({ sessionId: session?.id, preset: name });
+      },
+    },
     tools: {
       register(definition) {
         registeredTools.push(definition);
@@ -221,7 +248,7 @@ function makeHost() {
   };
   services.ctx = ctx;
 
-  return { ctx, services, registeredTools, registeredRoutes, serviceCalls, scopedTools };
+  return { ctx, services, registeredTools, registeredRoutes, serviceCalls, scopedTools, permissionCalls };
 }
 
 test("the plugin mounts routes and tools, then answers a WeChat message end to end", async (t) => {
@@ -256,8 +283,8 @@ test("the plugin mounts routes and tools, then answers a WeChat message end to e
 
   // Mounting is asynchronous: wait for the routes the page needs.
   assert.ok(
-    await waitFor(() => host.registeredRoutes.length === 9),
-    `expected 9 routes, got ${host.registeredRoutes.map((route) => route.path).join(", ")}`,
+    await waitFor(() => host.registeredRoutes.length === 10),
+    `expected 10 routes, got ${host.registeredRoutes.map((route) => route.path).join(", ")}`,
   );
 
   assert.deepEqual(
@@ -269,6 +296,7 @@ test("the plugin mounts routes and tools, then answers a WeChat message end to e
       "/dsh-weixin/login/start",
       "/dsh-weixin/login/status",
       "/dsh-weixin/login/verify",
+      "/dsh-weixin/session-settings",
       "/dsh-weixin/status",
       "/dsh-weixin/tools",
       "/dsh-weixin/workspace",
@@ -489,6 +517,131 @@ test("changing the workspace applies to the next conversation, not the running o
   const restored = runtime.setWorkspace("");
   assert.equal(restored.source, "config");
   assert.equal(restored.path, path.resolve("/tmp/first"));
+
+  await runtime.stop();
+});
+
+test("the preset and permission defaults reach a new conversation", async () => {
+  const host = makeHost();
+  const config = (await import("../lib/config.js")).normalizeConfig({}, "/tmp/workspace");
+  const runtimeModule = await import("../lib/channel/runtime.js");
+  const runtime = new runtimeModule.WeixinChannelRuntime({ services: host.services, config });
+
+  // Fresh channel: nothing chosen, the catalog is offered as-is.
+  const before = await runtime.sessionSettings();
+  assert.equal(before.agentPreset, null);
+  assert.equal(before.permissionPreset, null);
+  assert.equal(before.defaultPermission, "workspace-write");
+  assert.deepEqual(
+    before.permissions.map((option) => option.value),
+    ["read-only", "workspace-write", "danger-full-access"],
+  );
+  assert.equal(before.presets.length, 0, "this fake profile has no agent preset roster");
+
+  // An unknown permission preset is refused before anything is persisted.
+  await assert.rejects(
+    () => runtime.setSessionSettings({ permissionPreset: "superuser" }),
+    /没有这个权限预设/,
+  );
+
+  const saved = await runtime.setSessionSettings({
+    agentPreset: "none",
+    permissionPreset: "read-only",
+  });
+  assert.equal(saved.agentPreset, "none");
+  assert.equal(saved.permissionPreset, "read-only");
+
+  // A new conversation composes no preset and starts under read-only.
+  const binding = runtime.store.resolve("acc-im-bot", "perm@im.wechat");
+  void runtime.sessions
+    .runTurn({
+      binding,
+      content: [{ type: "text", text: "hi" }],
+      source: { kind: "user" },
+    })
+    .catch(() => undefined);
+  await waitFor(() => host.serviceCalls.some((call) => call.type === "followup"));
+
+  const created = host.serviceCalls.find((call) => call.type === "create");
+  assert.ok(created !== undefined);
+  assert.equal("agentPreset" in created.options.meta, false, "`none` composes no preset");
+
+  // Applied to the session that was just created, once.
+  assert.deepEqual(host.permissionCalls, [
+    { sessionId: binding.sessionId, preset: "read-only" },
+  ]);
+
+  // Clearing a field hands it back to the configured value.
+  const cleared = await runtime.setSessionSettings({ permissionPreset: null });
+  assert.equal(cleared.permissionPreset, null);
+  assert.equal(cleared.agentPreset, "none", "the other field keeps its choice");
+
+  await runtime.stop();
+});
+
+test("the preset picker reads the registry roster, not its bare list", async () => {
+  const host = makeHost();
+  const config = (await import("../lib/config.js")).normalizeConfig({}, "/tmp/workspace");
+  const runtimeModule = await import("../lib/channel/runtime.js");
+  const runtime = new runtimeModule.WeixinChannelRuntime({ services: host.services, config });
+
+  // `remoteExportList()` is the roster: it carries `isDefault`.
+  host.services.agentPresets = {
+    async resolve(id) {
+      return { id: id ?? "standard" };
+    },
+    async mount() {
+      return { id: "standard" };
+    },
+    async remoteExportList() {
+      return {
+        presets: [
+          { id: "standard", isDefault: true, name: "Standard" },
+          { id: "hunk-review", isDefault: false, name: "Hunk 评审", broken: "缺少 provider" },
+        ],
+      };
+    },
+  };
+
+  const withRoster = await runtime.sessionSettings();
+  assert.deepEqual(
+    withRoster.presets.map((preset) => preset.id),
+    ["standard", "hunk-review"],
+  );
+  assert.equal(withRoster.presets[0].isDefault, true);
+  assert.equal(withRoster.presets[1].broken, "缺少 provider");
+  assert.equal(withRoster.note, undefined);
+
+  // A registry that only offers the bare array still works, via `defaultId`.
+  host.services.agentPresets = {
+    async resolve(id) {
+      return { id: id ?? "alpha" };
+    },
+    async mount() {
+      return { id: "alpha" };
+    },
+    defaultId: "alpha",
+    async list() {
+      return [
+        { id: "alpha", name: "Alpha" },
+        { id: "beta" },
+      ];
+    },
+  };
+
+  const withList = await runtime.sessionSettings();
+  assert.deepEqual(
+    withList.presets.map((preset) => preset.id),
+    ["alpha", "beta"],
+  );
+  assert.deepEqual(
+    withList.presets.map((preset) => preset.isDefault),
+    [true, false],
+  );
+
+  // A preset from either list is accepted when saved.
+  const saved = await runtime.setSessionSettings({ agentPreset: "hunk-review" });
+  assert.equal(saved.agentPreset, "hunk-review");
 
   await runtime.stop();
 });

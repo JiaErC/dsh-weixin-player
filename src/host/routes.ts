@@ -9,11 +9,14 @@ import type {
   DirectoryListingPayload,
   LoginStartPayload,
   LoginStatusPayload,
+  SessionSettingsPayload,
+  SessionSettingsRequest,
   StatusPayload,
   ToolsPayload,
   WorkspacePayload,
 } from "../shared/wire.js";
 import { isTrustedRequest } from "./trust-fence.js";
+import { buildMpRoutes } from "./mp-api.js";
 
 /**
  * The channel's HTTP surface on the DSH webserver.
@@ -35,6 +38,14 @@ export interface WeixinRoutesDeps {
   runtime: WeixinChannelRuntime;
   config: WeixinChannelConfig;
   trustedHosts: () => readonly string[];
+  /**
+   * The mini-program token source.
+   *
+   * Present only when the deployment enabled `mpApi`; when absent the six
+   * `/dsh-weixin/mp/*` routes are not registered at all, so they 404 through the
+   * web server instead of advertising a surface that is switched off.
+   */
+  mpApiToken?: () => string | undefined;
 }
 
 function sendJson(res: ServerResponse, status: number, body: unknown, method: string): void {
@@ -393,6 +404,49 @@ async function handleDirs(
 }
 
 /**
+ * Read or change the agent preset and permission level new WeChat sessions get.
+ *
+ * Both lists come from the live catalogs, so presets published by the
+ *「Agent预设」editor appear without this plugin knowing anything about them.
+ */
+async function handleSessionSettings(
+  req: IncomingMessage,
+  res: ServerResponse,
+  deps: WeixinRoutesDeps,
+): Promise<void> {
+  if (!guard(req, res, deps, ["GET", "HEAD", "POST"], WEIXIN_PATHS.sessionSettings)) return;
+  const method = methodOf(req);
+
+  try {
+    if (method === "POST") {
+      const body = (await readJsonBody(req)) ?? {};
+      const request: SessionSettingsRequest = {
+        ...(typeof body.agentPreset === "string" || body.agentPreset === null
+          ? { agentPreset: body.agentPreset }
+          : {}),
+        ...(typeof body.permissionPreset === "string" || body.permissionPreset === null
+          ? { permissionPreset: body.permissionPreset }
+          : {}),
+      };
+      const payload: SessionSettingsPayload = await deps.runtime.setSessionSettings(request);
+      sendJson(res, 200, payload, method);
+      return;
+    }
+    const payload: SessionSettingsPayload = await deps.runtime.sessionSettings();
+    sendJson(res, 200, payload, method);
+  } catch (err) {
+    // An unknown preset name is a user error, not a server fault.
+    logger.warn(`routes: session-settings request failed: ${String(err)}`);
+    sendJson(
+      res,
+      400,
+      { ok: false, error: err instanceof Error ? err.message : String(err) },
+      method,
+    );
+  }
+}
+
+/**
  * Register every route this channel owns.
  *
  * @returns the route definitions so the caller can wrap each in `ctx.effect`.
@@ -432,6 +486,19 @@ export function buildWeixinRoutes(deps: WeixinRoutesDeps): WebRouteLike[] {
       handler: (req, res) => handleWorkspace(req, res, deps),
     },
     { kind: "exact", path: WEIXIN_PATHS.dirs, handler: (req, res) => handleDirs(req, res, deps) },
+    {
+      kind: "exact",
+      path: WEIXIN_PATHS.sessionSettings,
+      handler: (req, res) => handleSessionSettings(req, res, deps),
+    },
+    ...(deps.mpApiToken === undefined
+      ? []
+      : buildMpRoutes({
+          runtime: deps.runtime,
+          config: deps.config,
+          apiToken: deps.mpApiToken,
+          trustedHosts: deps.trustedHosts,
+        })),
   ];
 }
 
@@ -482,6 +549,7 @@ function renderPage(config: WeixinChannelConfig): string {
     <p class="muted">
       工作目录 <code id="workspace">-</code> ·
       模型预设 <code id="preset">-</code> ·
+      权限等级 <code id="permission">-</code> ·
       允许来源 <code id="allow">-</code>
     </p>
     <p class="muted">日常使用请用 DSH 右侧栏的「微信」tab；本页用于查看完整状态。</p>
@@ -542,6 +610,7 @@ async function refreshStatus() {
     const channel = data.channel;
     $('workspace').textContent = channel.workspace + (channel.workspaceSource === 'settings' ? '（自定义）' : '（来自配置）');
     $('preset').textContent = channel.agentPreset || '部署默认';
+    $('permission').textContent = channel.permissionPreset || '部署默认';
     $('allow').textContent = channel.allowFrom.length ? channel.allowFrom.join(', ') : '账号主人';
     $('logfile').textContent = channel.logFile;
 

@@ -19,16 +19,19 @@ import {
   type DirectoryListingPayload,
   type PeerSnapshot,
   type QrLoginSnapshot,
+  type SessionSettingsPayload,
   type ToolsPayload,
   type WorkspacePayload,
 } from "../shared/wire";
 import {
   fetchDirs,
   fetchLoginStatus,
+  fetchSessionSettings,
   fetchStatus,
   fetchTools,
   fetchWorkspace,
   isAbort,
+  saveSessionSettings,
   saveWorkspace,
   setTools,
   startLogin,
@@ -41,6 +44,7 @@ import {
   cardLast,
   disabled,
   errorText,
+  field,
   hint,
   input,
   link,
@@ -58,6 +62,7 @@ import {
   qrPlaceholder,
   row,
   secondaryButton,
+  select,
   title,
   token,
 } from "./styles";
@@ -90,6 +95,24 @@ interface UiWorkspaceLike {
 const LOGIN_POLL_MS = 1500;
 /** Poll cadence for the channel status, workspace and tool exposure. */
 const STATUS_POLL_MS = 5000;
+
+/**
+ * Chinese names for the permission presets DSH ships with.
+ *
+ * The deployment's own label is shown next to it in the picker, so a renamed or
+ * extra preset still reads correctly instead of falling back to a bare key.
+ */
+const PERMISSION_ZH: Record<string, string> = {
+  "read-only": "仅可查看",
+  "workspace-write": "工作区内修改",
+  "danger-full-access": "完全权限",
+  auto: "自动审查",
+};
+
+/** Human label for a permission preset key. */
+function permissionLabel(value: string): string {
+  return PERMISSION_ZH[value] ?? value;
+}
 
 /** Statuses that are still moving and therefore worth polling. */
 const ACTIVE_LOGIN: ReadonlySet<string> = new Set([
@@ -277,6 +300,12 @@ export function WeixinTab({ sessionId, ctx }: WeixinTabProps): ReactElement {
   const [tools, setToolsState] = useState<ToolsPayload | null>(null);
   const [workspace, setWorkspaceState] = useState<WorkspacePayload | null>(null);
   const [workspaceDraft, setWorkspaceDraft] = useState("");
+  /** Agent preset / permission level new WeChat sessions start with. */
+  const [sessionSettingsState, setSessionSettingsState] = useState<SessionSettingsPayload | null>(
+    null,
+  );
+  const [presetDraft, setPresetDraft] = useState("");
+  const [permissionDraft, setPermissionDraft] = useState("");
   const [browsing, setBrowsing] = useState<DirectoryListingPayload | null>(null);
   /** Whether the directory dialog is open. */
   const [browseOpen, setBrowseOpen] = useState(false);
@@ -291,6 +320,9 @@ export function WeixinTab({ sessionId, ctx }: WeixinTabProps): ReactElement {
 
   const sessionRef = useRef<string | undefined>(sessionId);
   sessionRef.current = sessionId;
+
+  /** Whether the preset pickers have been initialised from the host. */
+  const settingsSeeded = useRef(false);
 
   /** Refresh channel status, the workspace, and this session's tool exposure. */
   const refresh = useCallback(async () => {
@@ -307,6 +339,21 @@ export function WeixinTab({ sessionId, ctx }: WeixinTabProps): ReactElement {
       setWorkspaceState(next);
       // Only seed the field while the user has not typed anything.
       setWorkspaceDraft((current) => (current === "" ? next.path : current));
+    } catch (err) {
+      if (!isAbort(err)) setError(errorMessageOf(err));
+    }
+
+    try {
+      const next = await fetchSessionSettings();
+      setSessionSettingsState(next);
+      // Seed the two pickers once, from the first successful read. Re-seeding on
+      // every poll would undo a choice the user is about to save (or has just
+      // cleared back to「跟随配置」).
+      if (!settingsSeeded.current) {
+        settingsSeeded.current = true;
+        setPresetDraft(next.agentPreset ?? "");
+        setPermissionDraft(next.permissionPreset ?? next.defaultPermission ?? "");
+      }
     } catch (err) {
       if (!isAbort(err)) setError(errorMessageOf(err));
     }
@@ -377,6 +424,43 @@ export function WeixinTab({ sessionId, ctx }: WeixinTabProps): ReactElement {
       setBusy(false);
     }
   }, []);
+
+  /**
+   * Persist the agent preset and permission level new conversations start with.
+   *
+   * An empty choice is sent as `null`, which tells the host to fall back to the
+   * Loader row instead of pinning an empty preset id.
+   */
+  const persistSessionSettings = useCallback(async () => {
+    setBusy(true);
+    setError(null);
+    setNotice(null);
+    try {
+      const next = await saveSessionSettings({
+        agentPreset: presetDraft === "" ? null : presetDraft,
+        permissionPreset: permissionDraft === "" ? null : permissionDraft,
+      });
+      setSessionSettingsState(next);
+      setPresetDraft(next.agentPreset ?? "");
+      setPermissionDraft(next.permissionPreset ?? next.defaultPermission ?? "");
+      const presetName =
+        next.agentPreset === null
+          ? "部署默认预设"
+          : next.agentPreset === "none"
+            ? "不组合预设"
+            : (next.presets.find((preset) => preset.id === next.agentPreset)?.name ??
+              next.agentPreset);
+      const permissionName =
+        next.permissionPreset === null
+          ? `部署默认（${permissionLabel(next.defaultPermission ?? "")}）`
+          : permissionLabel(next.permissionPreset);
+      setNotice(`已保存：新微信会话使用「${presetName}」+「${permissionName}」。`);
+    } catch (err) {
+      setError(errorMessageOf(err));
+    } finally {
+      setBusy(false);
+    }
+  }, [presetDraft, permissionDraft]);
 
   /**
    * Navigate the dialog to `path` (or reload the current directory).
@@ -517,6 +601,17 @@ export function WeixinTab({ sessionId, ctx }: WeixinTabProps): ReactElement {
   const sourceLabel =
     workspace === null ? "…" : workspace.source === "settings" ? "自定义" : "来自配置";
 
+  const presetOptions = sessionSettingsState?.presets ?? [];
+  const permissionOptions = sessionSettingsState?.permissions ?? [];
+  const defaultPermission = sessionSettingsState?.defaultPermission ?? null;
+  const presetName =
+    presetDraft === ""
+      ? "部署默认"
+      : presetDraft === "none"
+        ? "不组合"
+        : (presetOptions.find((preset) => preset.id === presetDraft)?.name ?? presetDraft);
+  const permissionName = permissionLabel(permissionDraft);
+
   return (
     <div style={panel}>
       <div style={card}>
@@ -575,6 +670,71 @@ export function WeixinTab({ sessionId, ctx }: WeixinTabProps): ReactElement {
           只影响之后新建的微信会话；已经开始的会话仍用旧目录（在微信里发 <code>/new</code> 就会用新目录）。
           {workspace !== null && !workspace.writable ? " 当前目录不可写，agent 可能无法落盘。" : ""}
         </p>
+        {notice !== null && <p style={{ ...hint, color: token.success }}>{notice}</p>}
+      </div>
+
+      <div style={card}>
+        <div style={cardHeader}>
+          <span style={title}>微信会话设置</span>
+          <span style={meta}>
+            {presetName} · {permissionName}
+          </span>
+        </div>
+
+        <label style={field}>
+          <span style={meta}>Agent 预设（新会话组合哪套能力）</span>
+          <select
+            style={select}
+            value={presetDraft}
+            disabled={busy}
+            onChange={(event) => setPresetDraft(event.target.value)}
+          >
+            <option value="">跟随配置{presetOptions.length === 0 ? "" : "（部署默认）"}</option>
+            <option value="none">不组合预设（没有工具）</option>
+            {presetOptions.map((preset) => (
+              <option key={preset.id} value={preset.id} disabled={preset.broken !== undefined}>
+                {preset.name ?? preset.id}
+                {preset.isDefault ? "（部署默认）" : ""}
+                {preset.broken === undefined ? "" : "（不可用）"}
+              </option>
+            ))}
+          </select>
+        </label>
+
+        <label style={field}>
+          <span style={meta}>权限等级（新会话的沙箱与审批策略）</span>
+          <select
+            style={select}
+            value={permissionDraft}
+            disabled={busy || permissionOptions.length === 0}
+            onChange={(event) => setPermissionDraft(event.target.value)}
+          >
+            {permissionOptions.length === 0 && <option value="">（部署未提供权限预设）</option>}
+            {permissionOptions.map((option) => (
+              <option key={option.value} value={option.value}>
+                {permissionLabel(option.value)}
+                {option.value === defaultPermission ? "（部署默认）" : ""}
+              </option>
+            ))}
+          </select>
+        </label>
+
+        <div style={row}>
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() => void persistSessionSettings()}
+            style={{ ...primaryButton, ...(busy ? disabled : {}) }}
+          >
+            保存
+          </button>
+        </div>
+
+        <p style={hint}>
+          只影响之后新建的微信会话：已有会话保持自己的预设与权限（在微信里发 <code>/new</code> 会按新设置新建一个）。
+          {permissionDraft === "" ? "" : ` 当前选择：${permissionLabel(permissionDraft)}。`}
+        </p>
+        {sessionSettingsState?.note !== undefined && <p style={hint}>{sessionSettingsState.note}</p>}
         {notice !== null && <p style={{ ...hint, color: token.success }}>{notice}</p>}
       </div>
 

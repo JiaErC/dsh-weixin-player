@@ -122,8 +122,43 @@ export const input: CSSProperties = {
   color: token.text,
 };
 
+/**
+ * Select box.
+ *
+ * A fixed compact height, deliberately: this control sits in a **column** flex
+ * box (`field`), where a `flex-basis` becomes a *height* — which is how the
+ * preset pickers first rendered ~140px tall. `flex: none` keeps it at one line
+ * however much room the card has.
+ */
+export const select: CSSProperties = {
+  font: "inherit",
+  fontSize: 12,
+  lineHeight: "18px",
+  height: 26,
+  maxHeight: 26,
+  boxSizing: "border-box",
+  padding: "0 6px",
+  borderRadius: 6,
+  border: `1px solid ${token.border}`,
+  background: token.surface,
+  color: token.text,
+  width: "100%",
+  minWidth: 0,
+  flex: "none",
+};
+
+/** One labelled control: caption above, control below, wrapping on narrow panes. */
+export const field: CSSProperties = {
+  display: "flex",
+  flexDirection: "column",
+  alignItems: "stretch",
+  gap: 4,
+  marginBottom: 8,
+};
+
 /** Status pill. */
-export function pill(color: string): CSSProperties {  return {
+export function pill(color: string): CSSProperties {
+  return {
     display: "inline-block",
     padding: "0 8px",
     borderRadius: 999,

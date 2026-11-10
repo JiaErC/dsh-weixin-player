@@ -110,6 +110,76 @@ export interface AgentDefaultModelService {
 export interface AgentPresetsService {
   resolve(id?: string): Promise<{ id: string }>;
   mount(agentCtx: unknown, id?: string): Promise<{ id: string }>;
+  /**
+   * The selection roster: every current declaration, each marked when it is the
+   * default, with the reason when it cannot compose a session.
+   *
+   * This is the method a picker reads. `list()` returns bare presets with no
+   * `isDefault` flag, and reading it as a roster object silently yields nothing
+   * — a mistake this channel already made once.
+   */
+  remoteExportList?(): Promise<{
+    presets: readonly {
+      id: string;
+      isDefault: boolean;
+      name?: string;
+      description?: string;
+      broken?: string;
+    }[];
+  }>;
+  /** Bare preset list, without the default marker. */
+  list?(): Promise<
+    readonly {
+      id: string;
+      name?: string;
+      description?: string;
+      broken?: string;
+    }[]
+  >;
+  /** Identity a session composes when it names no preset. */
+  readonly defaultId?: string;
+}
+
+/** One permission preset as the catalog presents it. */
+export interface PermissionPresetOption {
+  /** Stable preset key, e.g. `read-only`. */
+  value: string;
+  /** Display label the deployment configured. */
+  name: string;
+  /** One user-facing sentence on what it allows. */
+  description?: string;
+}
+
+/** `ctx.permissionPresets.catalog()` — the process-level permission catalog. */
+export interface PermissionPresetCatalog {
+  /** Every currently selectable preset, in contribution order. */
+  options: PermissionPresetOption[];
+  /** Presets eligible as defaults for future sessions. */
+  defaultOptions: PermissionPresetOption[];
+  /** Effective default preset key. */
+  defaultPreset: string;
+}
+
+/**
+ * `ctx.permissionPresets` — the sandbox/approval knob bundles a session can run
+ * under.
+ *
+ * Only the members this channel needs are declared: read the catalog for a
+ * picker, resolve to validate a name, and `set` to record the choice for one
+ * session (which writes the durable `permission/preset` fact plus both knobs).
+ */
+export interface PermissionPresetsService {
+  /** Keys currently selectable. */
+  readonly names?: readonly string[];
+  /** Effective default for newly created sessions. */
+  readonly defaultPreset: string;
+  catalog(): PermissionPresetCatalog;
+  /** Resolve a preset's knob bundle; throws for an unknown name. */
+  resolve(name: string): unknown;
+  /** The preset one session currently runs under. */
+  current?(session: unknown): string;
+  /** Record `name` for one session and apply its knobs. */
+  set(session: unknown, name: string): void;
 }
 
 /** `ctx.loader` — settles once the whole Loader tree is mounted. */
@@ -173,6 +243,7 @@ export interface HostServices {
   sessionQuery: SessionQueryService | undefined;
   agentDefaultModel: AgentDefaultModelService | undefined;
   agentPresets: AgentPresetsService | undefined;
+  permissionPresets: PermissionPresetsService | undefined;
   tools: ToolsService | undefined;
   webServer: WebServerLike | undefined;
   webRuntime: WebRuntimeLike | undefined;
@@ -204,6 +275,9 @@ export function readHostServices(ctx: HostContext): HostServices {
     },
     get agentPresets() {
       return read<AgentPresetsService>("agentPresets");
+    },
+    get permissionPresets() {
+      return read<PermissionPresetsService>("permissionPresets");
     },
     get tools() {
       return read<ToolsService>("tools");

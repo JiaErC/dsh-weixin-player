@@ -1,5 +1,8 @@
+import os from "node:os";
+
 import type { WeixinChannelConfig } from "../config.js";
-import type { HostServices } from "../dsh/services.js";
+import type { AgentLike, HostServices } from "../dsh/services.js";
+import { channelVersion } from "../protocol/api/api.js";
 import {
   listWeixinAccountIds,
   loadWeixinAccount,
@@ -12,18 +15,41 @@ import { WeixinQrLoginManager } from "../protocol/auth/login-qr.js";
 import { initializeQuoteStore } from "../protocol/messaging/quote-store.js";
 import { resetRuntimeSettings, setRuntimeSettings } from "../protocol/runtime-settings.js";
 import { logger } from "../protocol/util/logger.js";
-import type { AccountSnapshot, ChannelSnapshot, DirectoryListingPayload, PeerSnapshot, WorkspacePayload } from "../shared/wire.js";
+import type {
+  AccountSnapshot,
+  ChannelSnapshot,
+  DirectoryListingPayload,
+  MpAccount,
+  MpFilePayload,
+  MpFsPayload,
+  MpHelloPayload,
+  MpMachine,
+  MpMessagesPayload,
+  MpMessagesRequest,
+  MpNewSessionPayload,
+  MpNewSessionRequest,
+  MpPeer,
+  MpPreset,
+  MpStatePayload,
+  PeerSnapshot,
+  SessionSettingsPayload,
+  SessionSettingsRequest,
+  WorkspacePayload,
+} from "../shared/wire.js";
 import type { WeixinToolOptIn, ToolExposure } from "../tools/optin.js";
 import { handleInboundMessage } from "./handle-message.js";
 import { createConfigManager, createMonitorStatus, monitorWeixinAccount } from "./monitor.js";
 import type { MonitorStatus } from "./monitor.js";
 import { AccountSender } from "./outbound.js";
 import { AgentSessionManager, PeerSessionStore } from "./peer-session.js";
+import { RecentMessageStore } from "./recent.js";
 import {
   WeixinSettingsStore,
   inspectWorkspace,
   listDirectories,
+  listEntries,
   prepareWorkspace,
+  readTextFile,
   resolveWorkspace,
 } from "./settings.js";
 import type { ResolvedWorkspace } from "./settings.js";
@@ -58,6 +84,8 @@ export class WeixinChannelRuntime {
   readonly qr: WeixinQrLoginManager;
   readonly sessions: AgentSessionManager;
   readonly store = new PeerSessionStore();
+  /** Bounded transcript of each conversation, for the mini program. */
+  readonly recent = new RecentMessageStore();
 
   private readonly running = new Map<string, AccountRuntime>();
   /** Per-session tool exposure; set once the definitions exist. */
@@ -77,9 +105,52 @@ export class WeixinChannelRuntime {
       config: deps.config,
       tracker: this.tracker,
       workspace: () => this.workspace().path,
+      defaultAgentPreset: () => this.sessionDefaults().agentPreset,
+      defaultPermissionPreset: () => this.sessionDefaults().permissionPreset,
+      applyPermissionPreset: (sessionId, agent, preset) =>
+        this.applyPermissionPreset(sessionId, agent, preset),
       onAgentReady: (sessionId) => this.enableToolsForChannelSession(sessionId),
     });
     this.stopWatchingAccounts = onAccountsChanged(() => this.scheduleReconcile());
+  }
+
+  /**
+   * The agent preset and permission level new WeChat sessions start with.
+   *
+   * Resolution order per field: what the user chose in the sidebar tab, then the
+   * Loader row's value. A conversation-level preset already on file outranks the
+   * agent preset (see {@link AgentSessionManager}); nothing outranks the
+   * permission choice, because a session's permission is only ever set when it
+   * is created.
+   */
+  sessionDefaults(): { agentPreset: string | undefined; permissionPreset: string | undefined } {
+    return {
+      agentPreset: this.settings.agentPreset ?? this.config.agentPreset,
+      permissionPreset: this.settings.permissionPreset ?? this.config.permissionPreset,
+    };
+  }
+
+  /**
+   * Record a permission preset on a freshly created session.
+   *
+   * Mirrors the official channel plugins: validate the name first, then `set`
+   * once the session exists, which writes the durable `permission/preset` fact
+   * plus the sandbox and approval knobs together.
+   *
+   * @param sessionId - the session being initialized (for error reporting).
+   * @param agent - its live agent; `agent.session` is the real Session.
+   * @param preset - permission preset key.
+   * @throws {Error} when the profile has no permission service or the name is unknown.
+   */
+  private applyPermissionPreset(sessionId: string, agent: AgentLike, preset: string): void {
+    const permissions = this.deps.services.permissionPresets;
+    if (permissions === undefined) {
+      throw new Error("这个部署没有挂载 permissionPresets，无法设置权限等级");
+    }
+    // Throws for an unknown name, before anything is written to the session.
+    permissions.resolve(preset);
+    permissions.set(agent.session, preset);
+    logger.info(`runtime: session ${sessionId} starts under permission preset ${preset}`);
   }
 
   /**
@@ -148,6 +219,92 @@ export class WeixinChannelRuntime {
   }
 
   /**
+   * The agent preset and permission level new WeChat sessions start with, plus
+   * the two lists to pick from.
+   *
+   * The preset list is the same roster the mini program uses, which is the
+   * registry's view: presets published by the「Agent预设」editor show up here as
+   * soon as the editor saves them, with no plugin-specific plumbing.
+   */
+  async sessionSettings(): Promise<SessionSettingsPayload> {
+    const defaults = this.sessionDefaults();
+    const presets = await this.mpPresets();
+    const permissions = this.deps.services.permissionPresets;
+    const catalog = permissions?.catalog();
+    const notes: string[] = [];
+    if (permissions === undefined) notes.push("这个部署没有挂载 permissionPresets，权限等级只能跟随部署默认。");
+    if (presets.length === 0) {
+      notes.push("注册表里没有任何已发布的 Agent 预设（在「Agent预设」插件里保存并发布后会出现在这里）。");
+    }
+
+    return {
+      ok: true,
+      agentPreset: defaults.agentPreset ?? null,
+      permissionPreset: defaults.permissionPreset ?? null,
+      defaultPermission: catalog?.defaultPreset ?? null,
+      presets,
+      permissions: catalog?.options ?? [],
+      ...(notes.length === 0 ? {} : { note: notes.join(" ") }),
+    };
+  }
+
+  /**
+   * Change the defaults new WeChat sessions start with.
+   *
+   * Both values are validated against the live catalogs before anything is
+   * persisted, so a typo cannot leave the channel pointing at a preset that will
+   * fail to compose a session later.
+   *
+   * @param input - fields to change; omitted fields keep their current value.
+   * @returns the settings after the change.
+   * @throws {Error} when a name is unknown; the message is user-facing.
+   */
+  async setSessionSettings(input: SessionSettingsRequest): Promise<SessionSettingsPayload> {
+    if (input.agentPreset !== undefined) {
+      const wanted = input.agentPreset === null ? "" : input.agentPreset.trim();
+      if (wanted === "") {
+        this.settings.agentPreset = undefined;
+      } else if (wanted === "none") {
+        this.settings.agentPreset = "none";
+      } else {
+        const registry = this.deps.services.agentPresets;
+        if (registry === undefined) throw new Error("这个部署没有挂载 agentPresets，无法选择预设");
+        try {
+          await registry.resolve(wanted);
+        } catch {
+          const known = (await this.mpPresets()).map((preset) => preset.id).join("、");
+          throw new Error(`没有这个 Agent 预设：${wanted}${known === "" ? "" : `（可选：${known}）`}`);
+        }
+        this.settings.agentPreset = wanted;
+      }
+    }
+
+    if (input.permissionPreset !== undefined) {
+      const wanted = input.permissionPreset === null ? "" : input.permissionPreset.trim();
+      if (wanted === "") {
+        this.settings.permissionPreset = undefined;
+      } else {
+        const permissions = this.deps.services.permissionPresets;
+        if (permissions === undefined) throw new Error("这个部署没有挂载 permissionPresets，无法选择权限等级");
+        try {
+          permissions.resolve(wanted);
+        } catch {
+          const known = permissions.catalog().options.map((option) => option.value).join("、");
+          throw new Error(`没有这个权限预设：${wanted}${known === "" ? "" : `（可选：${known}）`}`);
+        }
+        this.settings.permissionPreset = wanted;
+      }
+    }
+
+    const defaults = this.sessionDefaults();
+    logger.info(
+      `runtime: session defaults set to agentPreset=${defaults.agentPreset ?? "(config)"} ` +
+        `permissionPreset=${defaults.permissionPreset ?? "(config)"}`,
+    );
+    return this.sessionSettings();
+  }
+
+  /**
    * Attach the per-session tool exposure manager.
    *
    * Separated from the constructor because the tool definitions close over this
@@ -212,6 +369,7 @@ export class WeixinChannelRuntime {
 
     await Promise.all([...this.running.keys()].map((accountId) => this.stopAccount(accountId)));
     await this.sessions.close();
+    this.recent.close();
     resetRuntimeSettings();
     logger.info("runtime: stopped");
   }
@@ -235,7 +393,11 @@ export class WeixinChannelRuntime {
     }
 
     const configManager = createConfigManager(account);
-    const sender = new AccountSender(account, account.cdnBaseUrl);
+    // The transcript mirrors what the peer actually received, so it records on
+    // the way out as well as on the way in.
+    const sender = new AccountSender(account, account.cdnBaseUrl, (to, text) => {
+      this.recent.record(account.accountId, to, "assistant", text);
+    });
     const status = createMonitorStatus();
     const abort = new AbortController();
 
@@ -256,6 +418,9 @@ export class WeixinChannelRuntime {
           cdnBaseUrl: account.cdnBaseUrl,
           startedAt: status.startedAt,
           allowFrom: () => this.allowFrom(account.accountId),
+          record: (accountId, peerId, role, text) => {
+            this.recent.record(accountId, peerId, role, text);
+          },
         }),
     })
       .catch((err) => {
@@ -394,22 +559,300 @@ export class WeixinChannelRuntime {
     }
 
     const peers: PeerSnapshot[] = this.store.list().slice(0, 50).map((binding) => ({
+      accountId: binding.accountId,
       peerId: binding.peerId,
       sessionId: binding.sessionId,
       lastActiveAt: binding.lastActiveAt,
       generation: binding.generation,
+      ...(binding.preset === undefined ? {} : { preset: binding.preset }),
     }));
 
     const workspace = this.workspace();
+    const defaults = this.sessionDefaults();
     return {
       workspace: workspace.path,
       workspaceSource: workspace.source,
-      agentPreset: this.config.agentPreset,
+      agentPreset: defaults.agentPreset,
+      permissionPreset: defaults.permissionPreset,
       sessionMode: this.config.sessionMode,
       allowFrom: this.config.allowFrom,
       accounts,
       peers,
       logFile: logger.getLogFilePath(),
+    };
+  }
+
+  // -------------------------------------------------------------------------
+  // Mini-program API
+  // -------------------------------------------------------------------------
+
+  /** Identity of this machine, so several computers can be told apart. */
+  machineInfo(): MpMachine {
+    return {
+      hostname: os.hostname() || "unknown",
+      platform: `${process.platform}/${process.arch}`,
+      node: process.versions.node,
+      channelVersion: channelVersion(),
+    };
+  }
+
+  /** Accounts in the shape the mini program renders. */
+  mpAccounts(): MpAccount[] {
+    return this.snapshot().accounts.map((account) => ({
+      accountId: account.accountId,
+      ...(account.name === undefined ? {} : { name: account.name }),
+      running: account.running,
+      ...(account.ownerUserId === undefined ? {} : { ownerUserId: account.ownerUserId }),
+      inboundCount: account.inboundCount,
+      ...(account.lastInboundAt === undefined ? {} : { lastInboundAt: account.lastInboundAt }),
+      ...(account.lastError === undefined ? {} : { lastError: account.lastError }),
+    }));
+  }
+
+  /** Whether a monitor is up, for the "started at" line. */
+  startedAt(): number {
+    let earliest = 0;
+    for (const runtime of this.running.values()) {
+      const at = runtime.status.startedAt;
+      if (at > 0 && (earliest === 0 || at < earliest)) earliest = at;
+    }
+    return earliest;
+  }
+
+  /** `GET /mp/hello` */
+  mpHello(): MpHelloPayload {
+    const workspace = this.workspacePayload();
+    return {
+      ok: true,
+      machine: this.machineInfo(),
+      workspace: {
+        path: workspace.path,
+        source: workspace.source,
+        writable: workspace.writable,
+      },
+      accounts: this.mpAccounts(),
+      startedAt: this.startedAt(),
+    };
+  }
+
+  /**
+   * Agent presets the mini program may choose from.
+   *
+   * A profile without a preset registry reports an empty list, and the app then
+   * hides the preset picker instead of offering choices that cannot work.
+   */
+  async mpPresets(): Promise<MpPreset[]> {
+    const service = this.deps.services.agentPresets;
+    if (service === undefined) return [];
+
+    try {
+      // The roster first: it carries the `isDefault` marker and the activation
+      // failures. `list()` is the fallback and returns a bare array, so it is
+      // read as one rather than as a roster object.
+      if (service.remoteExportList !== undefined) {
+        const roster = await service.remoteExportList();
+        return roster.presets.map((preset) => ({
+          id: preset.id,
+          isDefault: preset.isDefault,
+          ...(preset.name === undefined ? {} : { name: preset.name }),
+          ...(preset.description === undefined ? {} : { description: preset.description }),
+          ...(preset.broken === undefined ? {} : { broken: preset.broken }),
+        }));
+      }
+
+      if (service.list !== undefined) {
+        const presets = await service.list();
+        const defaultId = service.defaultId;
+        return presets.map((preset) => ({
+          id: preset.id,
+          isDefault: defaultId !== undefined && defaultId === preset.id,
+          ...(preset.name === undefined ? {} : { name: preset.name }),
+          ...(preset.description === undefined ? {} : { description: preset.description }),
+          ...(preset.broken === undefined ? {} : { broken: preset.broken }),
+        }));
+      }
+
+      return [];
+    } catch (err) {
+      logger.warn(`presets: could not read the roster: ${String(err)}`);
+      return [];
+    }
+  }
+
+  /** `GET /mp/state` — everything the dashboard needs in one round trip. */
+  async mpState(): Promise<MpStatePayload> {
+    const workspace = this.workspacePayload();
+    const presets = await this.mpPresets();
+    const peers: MpPeer[] = this.store.list().map((binding) => ({
+      accountId: binding.accountId,
+      peerId: binding.peerId,
+      sessionId: binding.sessionId,
+      generation: binding.generation,
+      lastActiveAt: binding.lastActiveAt,
+      running: this.sessions.isRunning(binding),
+      ...(binding.preset === undefined ? {} : { preset: binding.preset }),
+    }));
+
+    return {
+      ok: true,
+      machine: this.machineInfo(),
+      workspace: {
+        path: workspace.path,
+        source: workspace.source,
+        exists: workspace.exists,
+        writable: workspace.writable,
+      },
+      ...(this.config.agentPreset === undefined ? {} : { defaultPreset: this.config.agentPreset }),
+      presets,
+      peers,
+      accounts: this.mpAccounts(),
+    };
+  }
+
+  /** `GET /mp/fs?path=` — directories **and** files, metadata only. */
+  mpEntries(target?: string): MpFsPayload {
+    const path = target === undefined || target.trim() === "" ? this.workspace().path : target;
+    const listing = listEntries(path);
+    if ("error" in listing) throw new Error(listing.error);
+    return {
+      ok: true,
+      path: listing.path,
+      parent: listing.parent,
+      entries: listing.entries,
+      truncated: listing.truncated,
+      ...(listing.skipped === 0 ? {} : { skipped: listing.skipped }),
+    };
+  }
+
+  /**
+   * Start a fresh conversation for one WeChat peer, optionally with a new preset.
+   *
+   * DSH freezes a session's composition once its first turn has run, so
+   * "change this conversation's preset" is necessarily "start a new conversation
+   * with that preset". The old agent is disposed first, so nothing keeps running
+   * against the old composition.
+   *
+   * @param request.peerId - the WeChat id of the person.
+   * @param request.accountId - bot account; inferred when exactly one is logged in.
+   * @param request.preset - a preset id, `"none"` for a bare agent, `""` to fall
+   *   back to the channel default, or omitted to keep the current choice.
+   * @throws {Error} when the account or preset cannot be used; the message is
+   *   user-facing.
+   */
+  async mpNewSession(request: MpNewSessionRequest): Promise<MpNewSessionPayload> {
+    const peerId = request.peerId?.trim() ?? "";
+    if (peerId === "") throw new Error("peerId 不能为空");
+
+    const accountId = this.resolveAccountId(request.accountId);
+    const previous = this.store.resolve(accountId, peerId);
+
+    let presetOption: { preset?: string | null } | undefined;
+    if (request.preset !== undefined) {
+      const preset = request.preset.trim();
+      if (preset === "") {
+        presetOption = { preset: null };
+      } else if (preset === "none") {
+        presetOption = { preset: "none" };
+      } else {
+        const presets = await this.mpPresets();
+        const known = presets.find((candidate) => candidate.id === preset);
+        if (known === undefined) {
+          throw new Error(`没有这个 Agent 预设：${preset}`);
+        }
+        if (known.broken !== undefined) {
+          throw new Error(`这个预设当前不可用：${known.broken}`);
+        }
+        presetOption = { preset: known.id };
+      }
+    }
+
+    // Release the running conversation before its session id stops being current.
+    await this.sessions.disposeBinding(previous);
+    const binding = this.store.reset(accountId, peerId, presetOption);
+
+    logger.info(
+      `mp: new session for ${accountId}/${peerId} (${previous.sessionId} -> ${binding.sessionId}${binding.preset === undefined ? "" : `, preset=${binding.preset}`})`,
+    );
+
+    return {
+      ok: true,
+      accountId,
+      peerId,
+      sessionId: binding.sessionId,
+      ...(binding.preset === undefined ? {} : { preset: binding.preset }),
+      previousSessionId: previous.sessionId,
+    };
+  }
+
+  /**
+   * Pick the account a peer belongs to.
+   *
+   * @param requested - an explicit account id, when the app sent one.
+   * @throws {Error} when the id is unknown or there is nothing to infer from.
+   */
+  private resolveAccountId(requested: string | undefined): string {
+    const wanted = requested?.trim();
+    if (wanted !== undefined && wanted !== "") {
+      const normalized = normalizeWeixinAccountId(wanted);
+      if (!this.running.has(normalized) && listWeixinAccountIds().length === 0) {
+        throw new Error(`这个机器上没有已登录的微信账号：${wanted}`);
+      }
+      return normalized;
+    }
+
+    const running = this.runningAccountIds();
+    if (running.length === 1) return running[0] as string;
+    if (running.length > 1) {
+      throw new Error(`这台机器登录了多个微信账号（${running.join("、")}），请指定 accountId`);
+    }
+    const indexed = listWeixinAccountIds();
+    if (indexed.length === 1) return normalizeWeixinAccountId(indexed[0] as string);
+    if (indexed.length === 0) throw new Error("这台机器还没有登录任何微信账号");
+    throw new Error(`这台机器登录了多个微信账号（${indexed.join("、")}），请指定 accountId`);
+  }
+
+  // -------------------------------------------------------------------------
+  // Mini-program: conversation transcript and text preview
+  // -------------------------------------------------------------------------
+
+  /**
+   * `GET /mp/messages` — the transcript this channel kept for one conversation.
+   *
+   * @param request.peerId - the WeChat id.
+   * @param request.accountId - bot account; inferred when only one is logged in.
+   * @param request.limit - how many of the newest lines to return (1–40).
+   */
+  mpMessages(request: MpMessagesRequest): MpMessagesPayload {
+    const peerId = request.peerId?.trim() ?? "";
+    if (peerId === "") throw new Error("peerId 不能为空");
+    const accountId = this.resolveAccountId(request.accountId);
+    const limit = request.limit === undefined ? 20 : request.limit;
+    const messages = this.recent.list(accountId, peerId, limit).map((message) => ({
+      role: message.role,
+      text: message.text,
+      at: message.at,
+    }));
+    return { ok: true, accountId, peerId, messages };
+  }
+
+  /**
+   * `GET /mp/file` — a bounded text preview of one file inside the workspace.
+   *
+   * The containment rule lives in {@link readTextFile}; this only turns its error
+   * into an exception the route reports as a 400.
+   */
+  mpReadFile(target: string | undefined): MpFilePayload {
+    const wanted = target?.trim() ?? "";
+    if (wanted === "") throw new Error("path 不能为空");
+    const preview = readTextFile(this.workspace().path, wanted);
+    if ("error" in preview) throw new Error(preview.error);
+    return {
+      ok: true,
+      path: preview.path,
+      name: preview.name,
+      size: preview.size,
+      truncated: preview.truncated,
+      text: preview.text,
     };
   }
 }

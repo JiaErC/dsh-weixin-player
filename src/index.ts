@@ -27,6 +27,8 @@ import type { WeixinChannelConfig } from "./config.js";
 import { readHostServices } from "./dsh/services.js";
 import type { Disposer, HostContext, HostServices } from "./dsh/services.js";
 import { buildWeixinRoutes, loginPageUrl } from "./host/routes.js";
+import { maskToken, resolveApiToken } from "./host/mp-token.js";
+import { WEIXIN_MP_BASE } from "./shared/wire.js";
 import { logger, setConsoleSink } from "./protocol/util/logger.js";
 import { buildWeixinTools } from "./tools/index.js";
 import { WeixinToolOptIn } from "./tools/optin.js";
@@ -110,10 +112,30 @@ async function initialize(
   }
 
   const trustedHosts = services.webRuntime?.trustedHosts ?? [];
+
+  // The mini-program API is opt-in: without `mpApi.enabled` the six routes are
+  // never registered, and nothing outside this machine can reach a directory
+  // listing through this plugin.
+  let mpApiToken: (() => string | undefined) | undefined;
+  if (config.mpApi.enabled) {
+    const token = resolveApiToken(config.mpApi.token);
+    if (token === undefined) {
+      logger.error(
+        "dsh-weixin: mpApi is enabled but no token could be resolved; the mini-program routes stay closed",
+      );
+    } else {
+      mpApiToken = () => token;
+      logger.info(
+        `dsh-weixin: mini-program API at ${WEIXIN_MP_BASE} (token ${maskToken(token)})`,
+      );
+    }
+  }
+
   for (const route of buildWeixinRoutes({
     runtime,
     config,
     trustedHosts: () => services.webRuntime?.trustedHosts ?? trustedHosts,
+    ...(mpApiToken === undefined ? {} : { mpApiToken }),
   })) {
     try {
       disposers.push(webServer.register(route));
@@ -125,6 +147,12 @@ async function initialize(
   const host = webServer.host ?? "127.0.0.1";
   const port = webServer.port ?? 3080;
   logger.info(`dsh-weixin: login page ready at ${loginPageUrl(host, port)}`);
+  if (mpApiToken !== undefined && host === "127.0.0.1") {
+    logger.info(
+      "dsh-weixin: the web server only listens on 127.0.0.1 — the mini program cannot reach it. " +
+        "Set webserver.host to 0.0.0.0 (LAN) or expose it through a tunnel.",
+    );
+  }
 }
 
 /**

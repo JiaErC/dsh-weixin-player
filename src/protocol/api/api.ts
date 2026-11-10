@@ -89,6 +89,11 @@ const pkg = readPackageJson();
 /** Fallback channel version reported to the iLink server when the manifest is unreadable. */
 const CHANNEL_VERSION = pkg.version ?? "unknown";
 
+/** This plugin's version, for the mini-program's machine card. */
+export function channelVersion(): string {
+  return CHANNEL_VERSION;
+}
+
 /** iLink-App-Id: 直接读取 package.json 顶层 ilink_appid 字段。 */
 const ILINK_APP_ID: string = pkg.ilink_appid ?? "";
 

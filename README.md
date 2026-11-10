@@ -61,6 +61,15 @@ Open a session, then add the **微信** tab from the right sidebar's new-tab pag
   directory is created when missing, the choice survives a restart, and it applies to
   *new* WeChat conversations (an existing one keeps its recorded directory — send `/new`
   in WeChat to move it).
+- **微信会话设置** → pick the **Agent preset** and the **permission level** new WeChat
+  conversations start with. The preset list is the live `agentPresetRegistry`, so presets
+  published from the「Agent预设」editor appear as soon as they are saved; the permission
+  list is the `permissionPresets` catalog (`read-only` / `workspace-write` /
+  `danger-full-access` here, shown as 仅可查看 / 工作区内修改 / 完全权限). The choice is
+  persisted and applied by calling `permissionPresets.set(session, preset)` right after
+  `agents.create`, the same way DSH's own channel plugins do it — so the session reports
+  the real preset name, not `custom`. Existing conversations keep their own preset and
+  permission (`/new` in WeChat starts a fresh one).
 - **开始登录** → scan the QR with the WeChat app; type the numeric code when the phone
   asks for one.
 - **本会话的微信工具 → 启用** → this conversation, and only this one, gains the tools
@@ -90,6 +99,28 @@ All fields are optional; they live in the Loader row's `config:` block in the pr
         sessionMode: per-peer         # or 'shared'
         textChunkLimit: 4000
 ```
+
+### Mini-program API (opt-in)
+
+[`WeixinPlayer`](E:/ai_projects/WeixinPlayer) drives this machine from a WeChat mini
+program. It is **off by default** — a phone cannot reach `127.0.0.1`, so opening it means
+exposing the port, and those routes can list directories, switch the workspace and start a
+conversation. Turn it on by overriding the plugin row:
+
+```yaml
+- id: dsh-weixin          # overrides the bundle row's whole config
+  config:
+    mpApi:
+      enabled: true
+```
+
+Then `GET /dsh-weixin/mp/{hello,state,fs,messages,file}` and
+`POST /dsh-weixin/mp/{workspace,session}` answer to `Authorization: Bearer <token>`, where the
+token is printed once at boot and stored in `<DSH_HOME>/weixin/mp-token.txt`.
+`/dsh-weixin/mp/token` hands it to the tab and is fenced to same-origin requests. Messages come
+from the channel's own bounded transcript (40 per conversation), and file preview is confined to
+the workspace, text-only, capped at 64 KiB, with dotfiles excluded. "Change the preset" always
+means "start a new conversation", because DSH locks a session's composition after its first turn.
 
 See [README.zh.md](README.zh.md) for the full table, the data layout under
 `<DSH_HOME>/weixin/`, the differences from upstream, and troubleshooting.

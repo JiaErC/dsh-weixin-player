@@ -32,6 +32,15 @@ export interface PeerBinding {
   lastActiveAt: number;
   /** Bumped by `/new`; part of the derived session id. */
   generation: number;
+  /**
+   * Agent preset this conversation's sessions compose.
+   *
+   * Absent means "whatever the channel config says". DSH locks a session's
+   * composition once its first turn starts, so choosing a preset here applies to
+   * the *next* session of this conversation — which is exactly what "换预设"
+   * does: it starts a fresh conversation with the new composition.
+   */
+  preset?: string;
 }
 
 interface PeerFile {
@@ -115,12 +124,29 @@ export class PeerSessionStore {
     return binding;
   }
 
-  /** Start a fresh conversation for one peer; returns the new binding. */
-  reset(accountId: string, peerId: string): PeerBinding {
+  /**
+   * Start a fresh conversation for one peer; returns the new binding.
+   *
+   * @param options.preset - a preset id to adopt, `null` to clear a previously
+   *   chosen one, or omitted to carry the current choice over. Carrying it over
+   *   is what makes `/new` behave: the conversation keeps its composition, only
+   *   the history is dropped.
+   */
+  reset(
+    accountId: string,
+    peerId: string,
+    options?: { preset?: string | null },
+  ): PeerBinding {
     this.load();
     const key = peerKey(accountId, peerId);
     const previous = this.bindings.get(key);
     const generation = (previous?.generation ?? 0) + 1;
+    const preset =
+      options === undefined
+        ? previous?.preset
+        : options.preset === null
+          ? undefined
+          : options.preset;
     const binding: PeerBinding = {
       accountId,
       peerId,
@@ -128,10 +154,26 @@ export class PeerSessionStore {
       createdAt: Date.now(),
       lastActiveAt: Date.now(),
       generation,
+      ...(preset === undefined ? {} : { preset }),
     };
     this.bindings.set(key, binding);
     this.persist();
-    logger.info(`peer-sessions: reset ${accountId}/${peerId} -> ${binding.sessionId}`);
+    logger.info(
+      `peer-sessions: reset ${accountId}/${peerId} -> ${binding.sessionId}${preset === undefined ? "" : ` (preset=${preset})`}`,
+    );
+    return binding;
+  }
+
+  /**
+   * Record the preset a conversation's next session must compose.
+   *
+   * @param preset - a preset id, or null to fall back to the channel default.
+   */
+  setPreset(accountId: string, peerId: string, preset: string | null): PeerBinding {
+    const binding = this.resolve(accountId, peerId);
+    if (preset === null) delete binding.preset;
+    else binding.preset = preset;
+    this.persist();
     return binding;
   }
 
@@ -163,6 +205,28 @@ export interface AgentSessionDeps {
    * conversation must pick up the new value without a restart.
    */
   workspace: () => string;
+  /**
+   * Channel-wide agent preset, read per call.
+   *
+   * A conversation-level choice (`binding.preset`, set from the mini program)
+   * outranks it; the tab's default decides for every other conversation.
+   */
+  defaultAgentPreset?: () => string | undefined;
+  /**
+   * Permission preset for *newly created* sessions, read per call.
+   *
+   * Resumed sessions keep the permission facts in their own log: re-applying a
+   * preset there would silently widen or narrow a conversation the user did not
+   * ask to change.
+   */
+  defaultPermissionPreset?: () => string | undefined;
+  /**
+   * Record a permission preset on a freshly created session.
+   *
+   * The host seam (it needs the real `Session` and the permission service), so
+   * the manager stays free of `@deepseek-ai/*` imports.
+   */
+  applyPermissionPreset?: (sessionId: string, agent: AgentLike, preset: string) => void;
   /**
    * Called once per newly created or resumed agent, before its first turn.
    *
@@ -218,11 +282,13 @@ export class AgentSessionManager {
    * the preset inside the unpublished setup callback so the agent's tools and
    * prompt sections exist before its first turn.
    */
-  private async composition(): Promise<{
+  private async composition(binding: PeerBinding): Promise<{
     agentPreset: string | undefined;
     setup: (agentCtx: unknown, agent: AgentLike) => void | Promise<void>;
   }> {
-    const requested = this.deps.config.agentPreset;
+    // A conversation-level choice wins over the channel-wide one, so the mini
+    // program can give one WeChat chat its own preset without touching others.
+    const requested = binding.preset ?? this.deps.defaultAgentPreset?.() ?? this.deps.config.agentPreset;
     if (requested === "none") {
       return { agentPreset: undefined, setup: () => {} };
     }
@@ -267,7 +333,7 @@ export class AgentSessionManager {
       return live;
     }
 
-    const composition = await this.composition();
+    const composition = await this.composition(binding);
     const agentOptions = this.agentOptions();
     const cwd = this.deps.workspace();
 
@@ -295,8 +361,25 @@ export class AgentSessionManager {
       setup: composition.setup,
     });
     this.handles.set(binding.sessionId, handle);
+
+    // A brand-new session starts on the channel's permission preset. This runs
+    // after `create` (the session must exist to record the durable fact) and
+    // before the first turn, so no tool call ever runs under the wrong bundle.
+    const permissionPreset = this.deps.defaultPermissionPreset?.();
+    if (permissionPreset !== undefined && permissionPreset !== "") {
+      try {
+        this.deps.applyPermissionPreset?.(binding.sessionId, handle.agent, permissionPreset);
+      } catch (err) {
+        logger.warn(
+          `agent-session: permission preset ${permissionPreset} was not applied to ` +
+            `${binding.sessionId}: ${String(err)}`,
+        );
+      }
+    }
+
     logger.info(
-      `agent-session: created ${binding.sessionId} (preset=${composition.agentPreset ?? "none"}, cwd=${cwd})`,
+      `agent-session: created ${binding.sessionId} (preset=${composition.agentPreset ?? "none"}, ` +
+        `permission=${permissionPreset ?? "deployment default"}, cwd=${cwd})`,
     );
     this.notifyReady(binding.sessionId, handle.agent);
     return handle.agent;

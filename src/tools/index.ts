@@ -161,6 +161,9 @@ export function buildWeixinTools(runtime: WeixinChannelRuntime): ToolDefinitionL
           `workspace: ${snapshot.workspace} (${snapshot.workspaceSource === "settings" ? "chosen in the tab" : "from config"})`,
         );
         lines.push(`agent preset: ${snapshot.agentPreset ?? "deployment default"}`);
+        lines.push(
+          `permission: ${snapshot.permissionPreset ?? "deployment default"} (new WeChat sessions)`,
+        );
         lines.push(`allowFrom: ${snapshot.allowFrom.length === 0 ? "account owner" : snapshot.allowFrom.join(", ")}`);
         lines.push(`log: ${snapshot.logFile}`);
         if (snapshot.accounts.length === 0) {

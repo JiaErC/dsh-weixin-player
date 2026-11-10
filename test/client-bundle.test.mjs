@@ -219,6 +219,33 @@ function bundleIncludes(source, text) {
   return source.includes(text) || source.includes(escapeForBundle(text));
 }
 
+test("the built bundle carries the session-settings card", () => {
+  const source = readFileSync(BUNDLE, "utf8");
+
+  for (const copy of [
+    "微信会话设置",
+    "Agent 预设（新会话组合哪套能力）",
+    "权限等级（新会话的沙箱与审批策略）",
+    "跟随配置",
+    "不组合预设（没有工具）",
+    // The three levels, in the words the feature was requested with.
+    "仅可查看",
+    "工作区内修改",
+    "完全权限",
+  ]) {
+    assert.ok(bundleIncludes(source, copy), `bundle is missing the copy: ${copy}`);
+  }
+
+  assert.ok(source.includes("/dsh-weixin/session-settings"), "expected the new route path");
+
+  // The pickers must stay one line high: a `flex-basis` inside the column flex
+  // card became a ~140px *height* the first time around, so the select pins its
+  // own height and refuses to flex.
+  assert.ok(source.includes("height:26"), "expected the compact select height");
+  assert.ok(source.includes("maxHeight:26"), "expected the select height cap");
+  assert.ok(source.includes('flex:"none"'), "expected the select not to flex");
+});
+
 test("the built bundle carries the directory dialog", () => {
   const source = readFileSync(BUNDLE, "utf8");
 

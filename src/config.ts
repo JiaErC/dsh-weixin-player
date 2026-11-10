@@ -32,6 +32,11 @@ export interface WeixinChannelConfigInput {
    * default preset; `none` composes no preset (no tools, bare agent).
    */
   agentPreset?: string;
+  /**
+   * Permission preset id new WeChat sessions start with, e.g. `read-only`,
+   * `workspace-write`, `danger-full-access`. Omit to keep the deployment default.
+   */
+  permissionPreset?: string;
   /** How inbound peers map onto sessions. Default `per-peer`. */
   sessionMode?: SessionMode;
   /** Session id used by `sessionMode: "shared"`. Default `session-dsh-weixin`. */
@@ -56,6 +61,19 @@ export interface WeixinChannelConfigInput {
    * `true`.
    */
   autoEnableTools?: boolean;
+  /**
+   * The mini-program API (`/dsh-weixin/mp/*`).
+   *
+   * Off by default: enabling it exposes directory listing and session control to
+   * anything that can reach this DSH port **and** knows the token. Turn it on
+   * only together with a reachable URL (LAN address or a tunnel).
+   */
+  mpApi?: {
+    /** Serve the mini-program routes. Default `false`. */
+    enabled?: boolean;
+    /** Pin the bearer token instead of using the generated one. */
+    token?: string;
+  };
   /** Per-account overrides, keyed by normalised account id. */
   accounts?: Record<
     string,
@@ -79,6 +97,7 @@ export interface WeixinChannelConfig {
   allowFrom: string[];
   workspace: string;
   agentPreset: string | undefined;
+  permissionPreset: string | undefined;
   sessionMode: SessionMode;
   sharedSessionId: string;
   markdown: boolean;
@@ -92,6 +111,7 @@ export interface WeixinChannelConfig {
   botAgent: string | undefined;
   routeTag: string | undefined;
   loginPage: boolean;
+  mpApi: { enabled: boolean; token: string | undefined };
 }
 
 /** Thrown when the row's `config:` block cannot be used as written. */
@@ -174,6 +194,7 @@ export function normalizeConfig(
     allowFrom: asStringArray(input.allowFrom, "allowFrom"),
     workspace,
     agentPreset: asOptionalString(input.agentPreset, "agentPreset"),
+    permissionPreset: asOptionalString(input.permissionPreset, "permissionPreset"),
     sessionMode,
     sharedSessionId: asOptionalString(input.sharedSessionId, "sharedSessionId") ?? "session-dsh-weixin",
     markdown: asBoolean(input.markdown, "markdown", true),
@@ -187,5 +208,9 @@ export function normalizeConfig(
     botAgent: asOptionalString(input.botAgent, "botAgent"),
     routeTag: asOptionalString(input.routeTag, "routeTag"),
     loginPage: asBoolean(input.loginPage, "loginPage", true),
+    mpApi: {
+      enabled: asBoolean(input.mpApi?.enabled, "mpApi.enabled", false),
+      token: asOptionalString(input.mpApi?.token, "mpApi.token"),
+    },
   };
 }

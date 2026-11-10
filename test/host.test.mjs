@@ -98,6 +98,46 @@ function makeRuntime(overrides = {}) {
             };
           },
         }),
+    // Session-settings routes: a stand-in that validates like the real runtime.
+    ...(overrides.sessionSettingsApi === false
+      ? {}
+      : {
+          chosenAgentPreset: null,
+          chosenPermissionPreset: null,
+          async sessionSettings() {
+            return {
+              ok: true,
+              agentPreset: this.chosenAgentPreset,
+              permissionPreset: this.chosenPermissionPreset,
+              defaultPermission: "workspace-write",
+              presets: [
+                { id: "standard", isDefault: true, name: "Standard" },
+                { id: "hunk-review", isDefault: false, name: "Hunk 评审" },
+              ],
+              permissions: [
+                { value: "read-only", name: "read-only" },
+                { value: "workspace-write", name: "workspace-write" },
+                { value: "danger-full-access", name: "danger-full-access" },
+              ],
+            };
+          },
+          async setSessionSettings(input) {
+            calls.push({ type: "setSessionSettings", input });
+            if (
+              typeof input.permissionPreset === "string" &&
+              !["read-only", "workspace-write", "danger-full-access"].includes(
+                input.permissionPreset,
+              )
+            ) {
+              throw new Error(`没有这个权限预设：${input.permissionPreset}`);
+            }
+            if (input.agentPreset !== undefined) this.chosenAgentPreset = input.agentPreset;
+            if (input.permissionPreset !== undefined) {
+              this.chosenPermissionPreset = input.permissionPreset;
+            }
+            return this.sessionSettings();
+          },
+        }),
   };
 }
 
@@ -390,5 +430,84 @@ test("the workspace routes are fenced against cross-origin writes", async () => 
     });
     assert.equal(response.status, 403);
     assert.equal(runtime.calls.some((call) => call.type === "setWorkspace"), false);
+  });
+});
+
+test("the session-settings route offers both catalogs", async () => {
+  const runtime = makeRuntime();
+  const routes = buildWeixinRoutes({ runtime, config: CONFIG, trustedHosts: () => [] });
+
+  await withServer(routes, async (base) => {
+    const response = await fetch(`${base}/dsh-weixin/session-settings`);
+    assert.equal(response.status, 200);
+    const body = await response.json();
+    assert.deepEqual(
+      body.permissions.map((option) => option.value),
+      ["read-only", "workspace-write", "danger-full-access"],
+    );
+    assert.equal(body.presets[0].id, "standard");
+    assert.equal(body.defaultPermission, "workspace-write");
+    // Nothing chosen yet: the deployment values apply.
+    assert.equal(body.agentPreset, null);
+    assert.equal(body.permissionPreset, null);
+  });
+});
+
+test("the session-settings route saves a preset and a permission level", async () => {
+  const runtime = makeRuntime();
+  const routes = buildWeixinRoutes({ runtime, config: CONFIG, trustedHosts: () => [] });
+
+  await withServer(routes, async (base) => {
+    const response = await fetch(`${base}/dsh-weixin/session-settings`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ agentPreset: "hunk-review", permissionPreset: "read-only" }),
+    });
+    assert.equal(response.status, 200);
+    const body = await response.json();
+    assert.equal(body.agentPreset, "hunk-review");
+    assert.equal(body.permissionPreset, "read-only");
+
+    // The other field survives a save that only touches one of them.
+    const cleared = await fetch(`${base}/dsh-weixin/session-settings`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ agentPreset: null }),
+    });
+    const afterClear = await cleared.json();
+    assert.equal(afterClear.agentPreset, null);
+    assert.equal(afterClear.permissionPreset, "read-only");
+  });
+});
+
+test("an unknown permission preset is a 400 with the reason", async () => {
+  const runtime = makeRuntime();
+  const routes = buildWeixinRoutes({ runtime, config: CONFIG, trustedHosts: () => [] });
+
+  await withServer(routes, async (base) => {
+    const response = await fetch(`${base}/dsh-weixin/session-settings`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ permissionPreset: "superuser" }),
+    });
+    assert.equal(response.status, 400);
+    const body = await response.json();
+    assert.equal(body.ok, false);
+    assert.match(body.error, /没有这个权限预设/);
+  });
+});
+
+test("the session-settings route is fenced against cross-origin writes", async () => {
+  const runtime = makeRuntime();
+  const routes = buildWeixinRoutes({ runtime, config: CONFIG, trustedHosts: () => [] });
+
+  await withServer(routes, async (base) => {
+    const response = await fetch(`${base}/dsh-weixin/session-settings`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Origin: "https://evil.example" },
+      body: JSON.stringify({ permissionPreset: "read-only" }),
+    });
+    assert.equal(response.status, 403);
+    assert.equal(runtime.calls.some((call) => call.type === "setSessionSettings"), false);
   });
 });

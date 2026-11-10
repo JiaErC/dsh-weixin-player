@@ -10,6 +10,8 @@ import {
   type StatusPayload,
   type LoginStartPayload,
   type LoginStatusPayload,
+  type SessionSettingsPayload,
+  type SessionSettingsRequest,
   type ToolsPayload,
   type WorkspacePayload,
 } from "../shared/wire";
@@ -154,4 +156,22 @@ export async function fetchDirs(
   const query =
     dirPath === undefined || dirPath === "" ? "" : `?path=${encodeURIComponent(dirPath)}`;
   return request<DirectoryListingPayload>(`${WEIXIN_PATHS.dirs}${query}`, { signal });
+}
+
+/** Read the agent preset and permission level new WeChat sessions start with. */
+export async function fetchSessionSettings(signal?: AbortSignal): Promise<SessionSettingsPayload> {
+  return request<SessionSettingsPayload>(WEIXIN_PATHS.sessionSettings, { signal });
+}
+
+/**
+ * Change those defaults.
+ *
+ * Omitting a field leaves it alone; sending `null` clears the choice so the
+ * configured value applies again.
+ */
+export async function saveSessionSettings(
+  payload: SessionSettingsRequest,
+  signal?: AbortSignal,
+): Promise<SessionSettingsPayload> {
+  return request<SessionSettingsPayload>(WEIXIN_PATHS.sessionSettings, { payload, signal });
 }

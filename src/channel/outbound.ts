@@ -46,6 +46,12 @@ export class AccountSender {
   constructor(
     private readonly account: ResolvedWeixinAccount,
     private readonly cdnBaseUrl: string,
+    /**
+     * Observer for text that actually went out, used to keep a per-conversation
+     * transcript for the mini program. Optional so tests can build a sender
+     * without a channel around it.
+     */
+    private readonly onSent?: (to: string, text: string) => void,
   ) {}
 
   private get opts(): {
@@ -93,6 +99,13 @@ export class AccountSender {
         ...(context?.runId === undefined ? {} : { runId: context.runId }),
       },
     });
+    // Record only after the platform accepted it: the transcript should mirror
+    // what the peer actually received.
+    try {
+      this.onSent?.(to, text);
+    } catch {
+      // A transcript problem must never fail a send.
+    }
     return response.serverMessageId;
   }
 

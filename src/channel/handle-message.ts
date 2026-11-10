@@ -41,6 +41,11 @@ export interface HandleMessageDeps {
   startedAt: number;
   /** Peer ids allowed to talk to the agent (empty = allow every sender). */
   allowFrom: () => readonly string[];
+  /**
+   * Keep a copy of each inbound body for the mini program's "recent messages".
+   * Optional: the pipeline works without it.
+   */
+  record?: (accountId: string, peerId: string, role: "user", text: string) => void;
 }
 
 /** Save decrypted inbound media once per process. */
@@ -229,6 +234,14 @@ export async function handleInboundMessage(
       ...(contextToken === undefined ? {} : { contextToken }),
     });
     return;
+  }
+
+  // Keep the transcript for the mini program before the turn runs, so a crash in
+  // the agent does not swallow what the user said.
+  try {
+    deps.record?.(deps.accountId, peerId, "user", userText);
+  } catch {
+    // A transcript problem must never drop a message.
   }
 
   const cachedConfig = await deps.configManager.getForUser(peerId, contextToken);

@@ -69,6 +69,41 @@ test("a malformed settings file is ignored, not fatal", () => {
   assert.equal(new WeixinSettingsStore().workspace, undefined);
 });
 
+test("the three settings do not clobber each other", () => {
+  const store = new WeixinSettingsStore();
+
+  store.workspace = "E:/projects/delta";
+  store.agentPreset = "standard";
+  store.permissionPreset = "read-only";
+
+  // Each writer must keep the siblings: three separate controls share one file.
+  assert.equal(store.workspace, "E:/projects/delta");
+  assert.equal(store.agentPreset, "standard");
+  assert.equal(store.permissionPreset, "read-only");
+
+  const onDisk = JSON.parse(
+    readFileSync(path.join(process.env.DSH_HOME, "weixin", "settings.json"), "utf8"),
+  );
+  assert.equal(onDisk.workspace, "E:/projects/delta");
+  assert.equal(onDisk.agentPreset, "standard");
+  assert.equal(onDisk.permissionPreset, "read-only");
+
+  // Clearing one leaves the other two alone.
+  store.permissionPreset = undefined;
+  const afterClear = JSON.parse(
+    readFileSync(path.join(process.env.DSH_HOME, "weixin", "settings.json"), "utf8"),
+  );
+  assert.equal("permissionPreset" in afterClear, false);
+  assert.equal(afterClear.workspace, "E:/projects/delta");
+  assert.equal(afterClear.agentPreset, "standard");
+
+  // Whitespace-only is "no choice", not a preset named " ".
+  store.agentPreset = "   ";
+  assert.equal(store.agentPreset, undefined);
+  assert.equal(new WeixinSettingsStore().agentPreset, undefined);
+  assert.equal(new WeixinSettingsStore().workspace, "E:/projects/delta");
+});
+
 test("prepareWorkspace rejects a relative path", () => {
   const result = prepareWorkspace("./somewhere/else");
   assert.equal(result.ok, false);
