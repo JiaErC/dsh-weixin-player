@@ -1,10 +1,6 @@
 MIT License
 
-Copyright (c) 2026 dsh-weixin-player contributors
-
-The WeChat protocol implementation under src/protocol derives from
-openclaw-weixin (https://github.com/Tencent/openclaw-weixin),
-Copyright (c) Tencent, released under the MIT License.
+Copyright (c) 2026 JiaErC
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
